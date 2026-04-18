@@ -1,0 +1,18 @@
+app:
+  name: feed-flow
+  env: local
+  port: 8080
+
+mysql:
+  dsn: "root:password@tcp(127.0.0.1:3306)/feed_flow?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open_conns: 20
+  max_idle_conns: 10
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+
+jwt:
+  secret: "replace-with-your-own-secret"
+  expire_hours: 72

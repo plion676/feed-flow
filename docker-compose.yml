@@ -1,0 +1,19 @@
+services:
+  mysql:
+    image: mysql:8
+    container_name: feed-flow-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: feed_flow
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - feed-flow-mysql-data:/var/lib/mysql
+
+volumes:
+  feed-flow-mysql-data:
