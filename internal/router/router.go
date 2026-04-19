@@ -7,7 +7,12 @@ import (
 )
 
 // RegisterRoutes wires the shared HTTP routes.
-func RegisterRoutes(engine *gin.Engine, authHandler *handler.AuthHandler) {
+func RegisterRoutes(
+	engine *gin.Engine,
+	authHandler *handler.AuthHandler,
+	userHandler *handler.UserHandler,
+	authMiddleware gin.HandlerFunc,
+) {
 	healthHandler := handler.NewHealthHandler()
 
 	engine.GET("/health", healthHandler.Ping)
@@ -19,6 +24,13 @@ func RegisterRoutes(engine *gin.Engine, authHandler *handler.AuthHandler) {
 		authGroup := apiV1.Group("/auth")
 		{
 			authGroup.POST("/register", authHandler.Register)
+			authGroup.POST("/login", authHandler.Login)
+		}
+
+		userGroup := apiV1.Group("/users")
+		userGroup.Use(authMiddleware)
+		{
+			userGroup.GET("/me", userHandler.Me)
 		}
 	}
 }

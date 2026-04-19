@@ -8,6 +8,7 @@ import (
 
 	"github.com/plion676/feed-flow/internal/handler"
 	"github.com/plion676/feed-flow/internal/middleware"
+	jwtpkg "github.com/plion676/feed-flow/internal/pkg/jwt"
 	"github.com/plion676/feed-flow/internal/repository"
 	"github.com/plion676/feed-flow/internal/router"
 	"github.com/plion676/feed-flow/internal/service"
@@ -36,12 +37,24 @@ func New(cfg *Config) *App {
 	if err != nil {
 		log.Fatalf("connect mysql failed: %v", err)
 	}
+	jwtManager, err := jwtpkg.NewManager(jwtpkg.Config{
+		Secret:      cfg.JWT.Secret,
+		ExpireHours: cfg.JWT.ExpireHours,
+	})
+	if err != nil {
+		log.Fatalf("init jwt manager failed: %v", err)
+	}
 	userRepo := repository.NewUserRepository(db)
 	userCountRepo := repository.NewUserCountRepository(db)
-	authService := service.NewAuthService(db, userRepo, userCountRepo)
-	authHandler := handler.NewAuthHandler(authService)
 
-	router.RegisterRoutes(engine, authHandler)
+	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
+	userService := service.NewUserService(userRepo)
+
+	authHandler := handler.NewAuthHandler(authService)
+	userHandler := handler.NewUserHandler(userService)
+	authMiddleware := middleware.AuthJWT(jwtManager)
+
+	router.RegisterRoutes(engine, authHandler, userHandler, authMiddleware)
 
 	return &App{
 		Config: cfg,

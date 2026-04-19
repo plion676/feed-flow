@@ -14,6 +14,5 @@ redis:
   db: 0
 
 jwt:
-  secret: "replace-with-your-own-secret"
+  secret: "change-me-in-local-config"
   expire_hours: 72
-
