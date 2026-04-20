@@ -20,6 +20,12 @@ func httpStatusFromError(err *xerror.Error) int {
 		return http.StatusUnauthorized
 	case xerror.ErrUserAlreadyExists:
 		return http.StatusConflict
+	case xerror.ErrNotFound:
+		return http.StatusNotFound
+	case xerror.ErrPostNotFound:
+		return http.StatusNotFound
+	case xerror.ErrFollowAlreadyExists:
+		return http.StatusConflict
 	case xerror.ErrNotImplemented:
 		return http.StatusNotImplemented
 	default:

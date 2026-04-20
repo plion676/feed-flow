@@ -27,9 +27,11 @@ func main() {
 	if err := db.AutoMigrate(
 		&model.User{},
 		&model.UserCount{},
+		&model.Post{},
+		&model.Follow{},
 	); err != nil {
 		log.Fatalf("auto migrate failed: %v", err)
 	}
 
-	log.Println("migration completed: users, user_counts")
+	log.Println("migration completed: users, user_counts, posts, follows")
 }

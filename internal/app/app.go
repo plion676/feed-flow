@@ -46,15 +46,23 @@ func New(cfg *Config) *App {
 	}
 	userRepo := repository.NewUserRepository(db)
 	userCountRepo := repository.NewUserCountRepository(db)
+	postRepo := repository.NewPostRepository(db)
+	followRepo := repository.NewFollowRepository(db)
 
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
 	userService := service.NewUserService(userRepo)
+	postService := service.NewPostService(postRepo)
+	followService := service.NewFollowService(followRepo, userRepo)
+	feedService := service.NewFeedService(followRepo, postRepo)
 
 	authHandler := handler.NewAuthHandler(authService)
 	userHandler := handler.NewUserHandler(userService)
+	postHandler := handler.NewPostHandler(postService)
+	followHandler := handler.NewFollowHandler(followService)
+	feedHandler := handler.NewFeedHandler(feedService)
 	authMiddleware := middleware.AuthJWT(jwtManager)
 
-	router.RegisterRoutes(engine, authHandler, userHandler, authMiddleware)
+	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, followHandler, feedHandler, authMiddleware)
 
 	return &App{
 		Config: cfg,
