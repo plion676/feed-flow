@@ -15,9 +15,19 @@ type postRepository interface {
 	GetByID(ctx context.Context, postID int64) (*model.Post, error)
 }
 
+type postFeedCacheInvalidator interface {
+	InvalidateHomeFeed(ctx context.Context, userID int64) error
+}
+
+type postFeedInvalidationEventPublisher interface {
+	PublishPostCreated(ctx context.Context, authorUserID int64) error
+}
+
 // PostService handles post create/read workflows.
 type PostService struct {
-	postRepo postRepository
+	postRepo             postRepository
+	feedInvalidator      postFeedCacheInvalidator
+	invalidationEventPub postFeedInvalidationEventPublisher
 }
 
 type CreatePostRequest struct {
@@ -38,6 +48,18 @@ func NewPostService(postRepo postRepository) *PostService {
 	return &PostService{postRepo: postRepo}
 }
 
+// WithFeedCacheInvalidator wires an optional cache invalidator for feed consistency.
+func (s *PostService) WithFeedCacheInvalidator(invalidator postFeedCacheInvalidator) *PostService {
+	s.feedInvalidator = invalidator
+	return s
+}
+
+// WithFeedInvalidationEventPublisher wires an optional async event publisher.
+func (s *PostService) WithFeedInvalidationEventPublisher(publisher postFeedInvalidationEventPublisher) *PostService {
+	s.invalidationEventPub = publisher
+	return s
+}
+
 func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostResult, *xerror.Error) {
 	trimmedContent := strings.TrimSpace(req.Content)
 	if req.UserID <= 0 || trimmedContent == "" {
@@ -56,6 +78,15 @@ func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostR
 	err := s.postRepo.Create(ctx, post)
 	if err != nil {
 		return nil, xerror.ErrInternal
+	}
+
+	if s.feedInvalidator != nil {
+		// Best-effort cache invalidation: publishing should not fail because cache cleanup fails.
+		_ = s.feedInvalidator.InvalidateHomeFeed(ctx, req.UserID)
+	}
+	if s.invalidationEventPub != nil {
+		// Best-effort async signal: queue publish failure should not fail post creation.
+		_ = s.invalidationEventPub.PublishPostCreated(ctx, req.UserID)
 	}
 
 	return &PostResult{

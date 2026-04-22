@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/plion676/feed-flow/internal/model"
@@ -11,6 +13,7 @@ import (
 const (
 	defaultFeedLimit = 20
 	maxFeedLimit     = 50
+	feedCacheTTL     = 30 * time.Second
 )
 
 type feedFollowRepository interface {
@@ -21,10 +24,16 @@ type feedPostRepository interface {
 	ListByUserIDs(ctx context.Context, userIDs []int64, lastPostID int64, limit int) ([]*model.Post, error)
 }
 
+type feedCacheRepository interface {
+	Get(ctx context.Context, key string) (value string, hit bool, err error)
+	Set(ctx context.Context, key string, value string, ttl time.Duration) error
+}
+
 // FeedService handles timeline read workflows.
 type FeedService struct {
 	followRepo feedFollowRepository
 	postRepo   feedPostRepository
+	cacheRepo  feedCacheRepository
 }
 
 type GetFeedRequest struct {
@@ -53,6 +62,12 @@ func NewFeedService(followRepo feedFollowRepository, postRepo feedPostRepository
 	}
 }
 
+// WithCache wires an optional cache backend for feed reads.
+func (s *FeedService) WithCache(cacheRepo feedCacheRepository) *FeedService {
+	s.cacheRepo = cacheRepo
+	return s
+}
+
 func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*FeedResult, *xerror.Error) {
 	if req.UserID <= 0 {
 		return nil, xerror.ErrUnauthorized
@@ -64,6 +79,11 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 	}
 	if limit > maxFeedLimit {
 		limit = maxFeedLimit
+	}
+
+	cacheKey := buildFeedCacheKey(req.UserID, req.LastPostID, limit)
+	if cached, ok := s.getFeedFromCache(ctx, cacheKey); ok {
+		return cached, nil
 	}
 
 	followingUserIDs, err := s.followRepo.ListFollowingUserIDs(ctx, req.UserID)
@@ -98,9 +118,47 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		nextCursor = items[len(items)-1].PostID
 	}
 
-	return &FeedResult{
+	result := &FeedResult{
 		Items:      items,
 		NextCursor: nextCursor,
 		HasMore:    hasMore,
-	}, nil
+	}
+
+	s.setFeedCache(ctx, cacheKey, result)
+	return result, nil
+}
+
+func buildFeedCacheKey(userID int64, lastPostID int64, limit int) string {
+	return fmt.Sprintf("feed:home:%d:%d:%d", userID, lastPostID, limit)
+}
+
+func (s *FeedService) getFeedFromCache(ctx context.Context, cacheKey string) (*FeedResult, bool) {
+	if s.cacheRepo == nil {
+		return nil, false
+	}
+
+	cachedValue, hit, err := s.cacheRepo.Get(ctx, cacheKey)
+	if err != nil || !hit {
+		return nil, false
+	}
+
+	var result FeedResult
+	if err := json.Unmarshal([]byte(cachedValue), &result); err != nil {
+		return nil, false
+	}
+
+	return &result, true
+}
+
+func (s *FeedService) setFeedCache(ctx context.Context, cacheKey string, result *FeedResult) {
+	if s.cacheRepo == nil || result == nil {
+		return
+	}
+
+	cacheValue, err := json.Marshal(result)
+	if err != nil {
+		return
+	}
+
+	_ = s.cacheRepo.Set(ctx, cacheKey, string(cacheValue), feedCacheTTL)
 }

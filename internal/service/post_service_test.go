@@ -19,6 +19,30 @@ type fakePostRepo struct {
 	createdPost *model.Post
 }
 
+type fakePostFeedInvalidator struct {
+	gotUserID int64
+	called    int
+	err       error
+}
+
+func (f *fakePostFeedInvalidator) InvalidateHomeFeed(_ context.Context, userID int64) error {
+	f.called++
+	f.gotUserID = userID
+	return f.err
+}
+
+type fakePostInvalidationEventPublisher struct {
+	gotAuthorUserID int64
+	called          int
+	err             error
+}
+
+func (f *fakePostInvalidationEventPublisher) PublishPostCreated(_ context.Context, authorUserID int64) error {
+	f.called++
+	f.gotAuthorUserID = authorUserID
+	return f.err
+}
+
 func (r *fakePostRepo) Create(_ context.Context, post *model.Post) error {
 	if r.createErr != nil {
 		return r.createErr
@@ -51,41 +75,69 @@ func TestPostServiceCreate(t *testing.T) {
 		name              string
 		req               CreatePostRequest
 		repo              *fakePostRepo
+		invalidator       *fakePostFeedInvalidator
+		eventPublisher    *fakePostInvalidationEventPublisher
 		wantErr           *xerror.Error
 		wantSavedContent  string
 		wantResultContent string
+		wantInvalidate    bool
+		wantPublishEvent  bool
 	}{
 		{
-			name:    "bad request when user id invalid",
-			req:     CreatePostRequest{UserID: 0, Content: "hello"},
-			repo:    &fakePostRepo{},
-			wantErr: xerror.ErrBadRequest,
+			name:           "bad request when user id invalid",
+			req:            CreatePostRequest{UserID: 0, Content: "hello"},
+			repo:           &fakePostRepo{},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrBadRequest,
 		},
 		{
-			name:    "bad request when content empty after trim",
-			req:     CreatePostRequest{UserID: 1001, Content: "   "},
-			repo:    &fakePostRepo{},
-			wantErr: xerror.ErrBadRequest,
+			name:           "bad request when content empty after trim",
+			req:            CreatePostRequest{UserID: 1001, Content: "   "},
+			repo:           &fakePostRepo{},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrBadRequest,
 		},
 		{
-			name:    "bad request when content rune count too long",
-			req:     CreatePostRequest{UserID: 1001, Content: strings.Repeat("你", 501)},
-			repo:    &fakePostRepo{},
-			wantErr: xerror.ErrBadRequest,
+			name:           "bad request when content rune count too long",
+			req:            CreatePostRequest{UserID: 1001, Content: strings.Repeat("你", 501)},
+			repo:           &fakePostRepo{},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrBadRequest,
 		},
 		{
-			name:    "internal error when repository create fails",
-			req:     CreatePostRequest{UserID: 1001, Content: "hello"},
-			repo:    &fakePostRepo{createErr: errors.New("insert failed")},
-			wantErr: xerror.ErrInternal,
+			name:           "internal error when repository create fails",
+			req:            CreatePostRequest{UserID: 1001, Content: "hello"},
+			repo:           &fakePostRepo{createErr: errors.New("insert failed")},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrInternal,
 		},
 		{
 			name:              "success and save trimmed content",
 			req:               CreatePostRequest{UserID: 1001, Content: "  hello post  "},
 			repo:              &fakePostRepo{},
+			invalidator:       &fakePostFeedInvalidator{},
+			eventPublisher:    &fakePostInvalidationEventPublisher{},
 			wantErr:           nil,
 			wantSavedContent:  "hello post",
 			wantResultContent: "hello post",
+			wantInvalidate:    true,
+			wantPublishEvent:  true,
+		},
+		{
+			name:              "success even when event publish fails",
+			req:               CreatePostRequest{UserID: 1001, Content: "  event down  "},
+			repo:              &fakePostRepo{},
+			invalidator:       &fakePostFeedInvalidator{},
+			eventPublisher:    &fakePostInvalidationEventPublisher{err: errors.New("queue timeout")},
+			wantErr:           nil,
+			wantSavedContent:  "event down",
+			wantResultContent: "event down",
+			wantInvalidate:    true,
+			wantPublishEvent:  true,
 		},
 	}
 
@@ -94,7 +146,9 @@ func TestPostServiceCreate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := NewPostService(tc.repo)
+			svc := NewPostService(tc.repo).
+				WithFeedCacheInvalidator(tc.invalidator).
+				WithFeedInvalidationEventPublisher(tc.eventPublisher)
 			got, gotErr := svc.Create(ctx, tc.req)
 
 			if gotErr != tc.wantErr {
@@ -104,6 +158,12 @@ func TestPostServiceCreate(t *testing.T) {
 			if tc.wantErr != nil {
 				if got != nil {
 					t.Fatalf("expected nil result when error happens, got=%+v", got)
+				}
+				if tc.invalidator.called != 0 {
+					t.Fatalf("invalidator should not be called on failed create, called=%d", tc.invalidator.called)
+				}
+				if tc.eventPublisher.called != 0 {
+					t.Fatalf("event publisher should not be called on failed create, called=%d", tc.eventPublisher.called)
 				}
 				return
 			}
@@ -128,6 +188,18 @@ func TestPostServiceCreate(t *testing.T) {
 			}
 			if got.CreatedAt.IsZero() {
 				t.Fatal("created_at should not be zero")
+			}
+			if tc.wantInvalidate && tc.invalidator.called != 1 {
+				t.Fatalf("expected invalidator called once, got=%d", tc.invalidator.called)
+			}
+			if tc.wantInvalidate && tc.invalidator.gotUserID != tc.req.UserID {
+				t.Fatalf("unexpected invalidator user id: got=%d want=%d", tc.invalidator.gotUserID, tc.req.UserID)
+			}
+			if tc.wantPublishEvent && tc.eventPublisher.called != 1 {
+				t.Fatalf("expected event publisher called once, got=%d", tc.eventPublisher.called)
+			}
+			if tc.wantPublishEvent && tc.eventPublisher.gotAuthorUserID != tc.req.UserID {
+				t.Fatalf("unexpected event publisher user id: got=%d want=%d", tc.eventPublisher.gotAuthorUserID, tc.req.UserID)
 			}
 		})
 	}

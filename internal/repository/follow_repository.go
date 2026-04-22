@@ -36,3 +36,16 @@ func (r *FollowRepository) ListFollowingUserIDs(ctx context.Context, userID int6
 
 	return targetIDs, nil
 }
+
+func (r *FollowRepository) ListFollowerUserIDs(ctx context.Context, targetUserID int64) ([]int64, error) {
+	var followerIDs []int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Follow{}).
+		Where("target_user_id = ?", targetUserID).
+		Pluck("user_id", &followerIDs).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return followerIDs, nil
+}

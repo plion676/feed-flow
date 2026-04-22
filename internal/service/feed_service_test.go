@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,10 +30,10 @@ type fakeFeedPostRepo struct {
 	posts []*model.Post
 	err   error
 
-	gotUserIDs   []int64
-	gotLastPost  int64
-	gotLimit     int
-	calledTimes  int
+	gotUserIDs  []int64
+	gotLastPost int64
+	gotLimit    int
+	calledTimes int
 }
 
 func (r *fakeFeedPostRepo) ListByUserIDs(_ context.Context, userIDs []int64, lastPostID int64, limit int) ([]*model.Post, error) {
@@ -75,6 +76,38 @@ func (r *fakeFeedPostRepo) ListByUserIDs(_ context.Context, userIDs []int64, las
 	return filtered, nil
 }
 
+type fakeFeedCacheRepo struct {
+	store map[string]string
+
+	getErr error
+	setErr error
+
+	setCalled int
+}
+
+func (r *fakeFeedCacheRepo) Get(_ context.Context, key string) (string, bool, error) {
+	if r.getErr != nil {
+		return "", false, r.getErr
+	}
+	if r.store == nil {
+		return "", false, nil
+	}
+	value, ok := r.store[key]
+	return value, ok, nil
+}
+
+func (r *fakeFeedCacheRepo) Set(_ context.Context, key string, value string, _ time.Duration) error {
+	r.setCalled++
+	if r.setErr != nil {
+		return r.setErr
+	}
+	if r.store == nil {
+		r.store = make(map[string]string)
+	}
+	r.store[key] = value
+	return nil
+}
+
 func containsInt64(nums []int64, target int64) bool {
 	for _, n := range nums {
 		if n == target {
@@ -100,17 +133,17 @@ func TestFeedServiceGetHomeFeed(t *testing.T) {
 	}
 
 	tests := []struct {
-		name             string
-		req              GetFeedRequest
-		followRepo       *fakeFeedFollowRepo
-		postRepo         *fakeFeedPostRepo
-		wantErr          *xerror.Error
-		wantItemIDs      []int64
-		wantHasMore      bool
-		wantNextCursor   int64
-		wantRepoLimit    int
-		wantLastPostID   int64
-		wantContainSelf  bool
+		name            string
+		req             GetFeedRequest
+		followRepo      *fakeFeedFollowRepo
+		postRepo        *fakeFeedPostRepo
+		wantErr         *xerror.Error
+		wantItemIDs     []int64
+		wantHasMore     bool
+		wantNextCursor  int64
+		wantRepoLimit   int
+		wantLastPostID  int64
+		wantContainSelf bool
 	}{
 		{
 			name:            "bad request when user id missing",
@@ -258,4 +291,114 @@ func TestFeedServiceGetHomeFeed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFeedServiceGetHomeFeedCache(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)
+
+	t.Run("cache hit should skip db repositories", func(t *testing.T) {
+		t.Parallel()
+
+		cacheKey := buildFeedCacheKey(1001, 0, 3)
+		cacheRepo := &fakeFeedCacheRepo{
+			store: map[string]string{
+				cacheKey: `{"items":[{"post_id":10,"user_id":1002,"content":"cached","created_at":"2026-04-22T12:00:00Z"}],"next_cursor":10,"has_more":false}`,
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{err: errors.New("should not be called")},
+			&fakeFeedPostRepo{err: errors.New("should not be called")},
+		).WithCache(cacheRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 1 || got.Items[0].PostID != 10 {
+			t.Fatalf("unexpected cached result: %+v", got)
+		}
+		if cacheRepo.setCalled != 0 {
+			t.Fatalf("cache hit should not call set, got=%d", cacheRepo.setCalled)
+		}
+	})
+
+	t.Run("cache miss should fallback db and then set cache", func(t *testing.T) {
+		t.Parallel()
+
+		cacheRepo := &fakeFeedCacheRepo{}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 10, UserID: 1002, Content: "p10", Status: 1, CreatedAt: now},
+				{ID: 9, UserID: 1001, Content: "p9", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithCache(cacheRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 2 {
+			t.Fatalf("unexpected result on cache miss: %+v", got)
+		}
+		if postRepo.calledTimes != 1 {
+			t.Fatalf("db repository should be called once on cache miss, got=%d", postRepo.calledTimes)
+		}
+		if cacheRepo.setCalled != 1 {
+			t.Fatalf("cache should be set once, got=%d", cacheRepo.setCalled)
+		}
+
+		expectKey := buildFeedCacheKey(1001, 0, 3)
+		cachedPayload, ok := cacheRepo.store[expectKey]
+		if !ok {
+			t.Fatalf("expected cached payload at key=%s", expectKey)
+		}
+		if !strings.Contains(cachedPayload, `"post_id":10`) {
+			t.Fatalf("unexpected cached payload: %s", cachedPayload)
+		}
+	})
+
+	t.Run("cache get error should fallback db", func(t *testing.T) {
+		t.Parallel()
+
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 7, UserID: 1001, Content: "p7", Status: 1, CreatedAt: now},
+			},
+		}
+		cacheRepo := &fakeFeedCacheRepo{getErr: errors.New("redis timeout")}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{},
+			postRepo,
+		).WithCache(cacheRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 1 || got.Items[0].PostID != 7 {
+			t.Fatalf("unexpected fallback result: %+v", got)
+		}
+		if postRepo.calledTimes != 1 {
+			t.Fatalf("db repository should be called when cache get fails, got=%d", postRepo.calledTimes)
+		}
+	})
 }

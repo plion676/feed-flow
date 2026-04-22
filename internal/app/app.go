@@ -48,12 +48,33 @@ func New(cfg *Config) *App {
 	userCountRepo := repository.NewUserCountRepository(db)
 	postRepo := repository.NewPostRepository(db)
 	followRepo := repository.NewFollowRepository(db)
+	var feedCacheRepo *repository.FeedCacheRepository
+	var feedCacheInvalidator *repository.FeedCacheInvalidatorRepository
+	var feedInvalidationEventPub *repository.FeedInvalidationEventRepository
+	redisClient, err := NewRedisClient(cfg)
+	if err != nil {
+		log.Printf("connect redis failed, fallback to db-only feed: %v", err)
+	} else {
+		feedCacheRepo = repository.NewFeedCacheRepository(redisClient)
+		feedCacheInvalidator = repository.NewFeedCacheInvalidatorRepository(redisClient)
+		feedInvalidationEventPub = repository.NewFeedInvalidationEventRepository(redisClient)
+	}
 
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
 	userService := service.NewUserService(userRepo)
 	postService := service.NewPostService(postRepo)
 	followService := service.NewFollowService(followRepo, userRepo)
 	feedService := service.NewFeedService(followRepo, postRepo)
+	if feedCacheRepo != nil {
+		feedService = feedService.WithCache(feedCacheRepo)
+	}
+	if feedCacheInvalidator != nil {
+		postService = postService.WithFeedCacheInvalidator(feedCacheInvalidator)
+		followService = followService.WithFeedCacheInvalidator(feedCacheInvalidator)
+	}
+	if feedInvalidationEventPub != nil {
+		postService = postService.WithFeedInvalidationEventPublisher(feedInvalidationEventPub)
+	}
 
 	authHandler := handler.NewAuthHandler(authService)
 	userHandler := handler.NewUserHandler(userService)
