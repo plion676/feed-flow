@@ -37,6 +37,22 @@ type fakeWorkerInvalidator struct {
 	maxActive   int
 }
 
+type fakeWorkerInboxFanout struct {
+	called         int
+	gotFollowerIDs []int64
+	gotPostID      int64
+	gotOccurredAt  int64
+	err            error
+}
+
+func (f *fakeWorkerInboxFanout) FanoutPostToFollowers(_ context.Context, followerIDs []int64, postID int64, occurredAt int64) error {
+	f.called++
+	f.gotFollowerIDs = append([]int64{}, followerIDs...)
+	f.gotPostID = postID
+	f.gotOccurredAt = occurredAt
+	return f.err
+}
+
 func (f *fakeWorkerInvalidator) InvalidateHomeFeed(_ context.Context, userID int64) error {
 	f.mu.Lock()
 	f.calledIDs = append(f.calledIDs, userID)
@@ -178,6 +194,59 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		}
 		if invalidator.MaxActive() > defaultFollowerInvalidationWorkers {
 			t.Fatalf("max active workers exceeded limit: got=%d limit=%d", invalidator.MaxActive(), defaultFollowerInvalidationWorkers)
+		}
+	})
+
+	t.Run("push mode should call inbox fanout when event has post id", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{}
+		fanout := &fakeWorkerInboxFanout{}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithHybridPolicy(NewFeedHybridPolicy(100)).
+			WithInboxFanout(fanout)
+
+		err := worker.HandlePostCreatedEvent(ctx, PostCreatedEvent{
+			AuthorUserID: 1001,
+			PostID:       3001,
+			OccurredAt:   1713950400,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fanout.called != 1 {
+			t.Fatalf("expected fanout called once, got=%d", fanout.called)
+		}
+		if fanout.gotPostID != 3001 {
+			t.Fatalf("unexpected fanout post id: got=%d", fanout.gotPostID)
+		}
+		if len(fanout.gotFollowerIDs) != len(followerIDs) {
+			t.Fatalf("unexpected fanout follower count: got=%d want=%d", len(fanout.gotFollowerIDs), len(followerIDs))
+		}
+	})
+
+	t.Run("pull mode should skip inbox fanout", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{}
+		fanout := &fakeWorkerInboxFanout{}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithHybridPolicy(NewFeedHybridPolicy(1)).
+			WithInboxFanout(fanout)
+
+		err := worker.HandlePostCreatedEvent(ctx, PostCreatedEvent{
+			AuthorUserID: 1001,
+			PostID:       3001,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fanout.called != 0 {
+			t.Fatalf("expected fanout not called in pull mode, got=%d", fanout.called)
 		}
 	})
 }

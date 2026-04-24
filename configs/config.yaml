@@ -17,3 +17,11 @@ jwt:
   secret: "replace-with-your-own-secret"
   expire_hours: 72
 
+feed:
+  hybrid:
+    # <= threshold => push_and_pull; > threshold => pull_only.
+    # keep 0 to fully fallback to pull v1.
+    push_follower_threshold: 0
+  inbox:
+    enabled: false
+    max_items: 1000

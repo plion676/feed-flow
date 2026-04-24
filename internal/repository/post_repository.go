@@ -53,3 +53,34 @@ func (r *PostRepository) ListByUserIDs(ctx context.Context, userIDs []int64, las
 
 	return posts, nil
 }
+
+func (r *PostRepository) ListByIDs(ctx context.Context, postIDs []int64) ([]*model.Post, error) {
+	if len(postIDs) == 0 {
+		return []*model.Post{}, nil
+	}
+
+	var posts []*model.Post
+	if err := r.db.WithContext(ctx).
+		Model(&model.Post{}).
+		Where("status = 1").
+		Where("id IN ?", postIDs).
+		Find(&posts).Error; err != nil {
+		return nil, err
+	}
+
+	byID := make(map[int64]*model.Post, len(posts))
+	for _, post := range posts {
+		byID[post.ID] = post
+	}
+
+	ordered := make([]*model.Post, 0, len(posts))
+	for _, postID := range postIDs {
+		post, ok := byID[postID]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, post)
+	}
+
+	return ordered, nil
+}

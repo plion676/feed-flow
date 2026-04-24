@@ -37,13 +37,24 @@ func main() {
 	followRepo := repository.NewFollowRepository(db)
 	feedInvalidator := repository.NewFeedCacheInvalidatorRepository(redisClient)
 	eventRepo := repository.NewFeedInvalidationEventRepository(redisClient)
-	worker := service.NewFeedInvalidationWorker(followRepo, feedInvalidator)
+	worker := service.NewFeedInvalidationWorker(followRepo, feedInvalidator).
+		WithHybridPolicy(service.NewFeedHybridPolicy(cfg.Feed.Hybrid.PushFollowerThreshold))
+	if cfg.Feed.Inbox.Enabled {
+		inboxRepo := repository.NewFeedInboxRepository(redisClient)
+		worker = worker.WithInboxFanout(service.NewFeedInboxFanout(inboxRepo, cfg.Feed.Inbox.MaxItems))
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	log.Println("feed invalidation worker started")
-	err = eventRepo.ConsumePostCreated(ctx, worker.HandlePostCreated)
+	err = eventRepo.ConsumePostCreatedEvents(ctx, func(ctx context.Context, event repository.FeedInvalidationEvent) error {
+		return worker.HandlePostCreatedEvent(ctx, service.PostCreatedEvent{
+			AuthorUserID: event.AuthorID,
+			PostID:       event.PostID,
+			OccurredAt:   event.OccurredAt,
+		})
+	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("consume post created events failed: %v", err)
 	}

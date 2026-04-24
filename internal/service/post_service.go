@@ -20,7 +20,7 @@ type postFeedCacheInvalidator interface {
 }
 
 type postFeedInvalidationEventPublisher interface {
-	PublishPostCreated(ctx context.Context, authorUserID int64) error
+	PublishPostCreatedEvent(ctx context.Context, authorUserID int64, postID int64) error
 }
 
 // PostService handles post create/read workflows.
@@ -86,7 +86,7 @@ func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostR
 	}
 	if s.invalidationEventPub != nil {
 		// Best-effort async signal: queue publish failure should not fail post creation.
-		_ = s.invalidationEventPub.PublishPostCreated(ctx, req.UserID)
+		_ = s.invalidationEventPub.PublishPostCreatedEvent(ctx, req.UserID, post.ID)
 	}
 
 	return &PostResult{

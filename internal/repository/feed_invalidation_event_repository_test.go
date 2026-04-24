@@ -55,7 +55,7 @@ func TestIsBusyGroupError(t *testing.T) {
 func TestDecodeFeedInvalidationEvent(t *testing.T) {
 	t.Parallel()
 
-	validJSON := `{"type":"post_created","author_id":1001,"occurred_at":1700000000}`
+	validJSON := `{"type":"post_created","author_id":1001,"post_id":3001,"occurred_at":1700000000}`
 
 	tests := []struct {
 		name     string
@@ -63,6 +63,7 @@ func TestDecodeFeedInvalidationEvent(t *testing.T) {
 		wantOK   bool
 		wantType string
 		wantID   int64
+		wantPost int64
 	}{
 		{
 			name:     "string payload",
@@ -70,6 +71,7 @@ func TestDecodeFeedInvalidationEvent(t *testing.T) {
 			wantOK:   true,
 			wantType: "post_created",
 			wantID:   1001,
+			wantPost: 3001,
 		},
 		{
 			name:     "byte payload",
@@ -77,6 +79,7 @@ func TestDecodeFeedInvalidationEvent(t *testing.T) {
 			wantOK:   true,
 			wantType: "post_created",
 			wantID:   1001,
+			wantPost: 3001,
 		},
 		{
 			name:    "invalid json",
@@ -102,7 +105,7 @@ func TestDecodeFeedInvalidationEvent(t *testing.T) {
 			if !tc.wantOK {
 				return
 			}
-			if got.Type != tc.wantType || got.AuthorID != tc.wantID {
+			if got.Type != tc.wantType || got.AuthorID != tc.wantID || got.PostID != tc.wantPost {
 				t.Fatalf("unexpected event: got=%+v", got)
 			}
 		})

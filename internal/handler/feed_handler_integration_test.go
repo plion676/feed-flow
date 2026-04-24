@@ -58,6 +58,26 @@ func (r *fakeFeedPostRepoForHandler) ListByUserIDs(_ context.Context, userIDs []
 	return filtered, nil
 }
 
+func (r *fakeFeedPostRepoForHandler) ListByIDs(_ context.Context, postIDs []int64) ([]*model.Post, error) {
+	byID := make(map[int64]*model.Post, len(r.posts))
+	for _, post := range r.posts {
+		if post.Status != 1 {
+			continue
+		}
+		byID[post.ID] = post
+	}
+
+	ordered := make([]*model.Post, 0, len(postIDs))
+	for _, postID := range postIDs {
+		post, ok := byID[postID]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, post)
+	}
+	return ordered, nil
+}
+
 type feedAPIResponse struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
@@ -236,4 +256,3 @@ func TestFeedGetHomeFeedBadQueryParams(t *testing.T) {
 		})
 	}
 }
-

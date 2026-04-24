@@ -51,6 +51,7 @@ func New(cfg *Config) *App {
 	var feedCacheRepo *repository.FeedCacheRepository
 	var feedCacheInvalidator *repository.FeedCacheInvalidatorRepository
 	var feedInvalidationEventPub *repository.FeedInvalidationEventRepository
+	var feedInboxRepo *repository.FeedInboxRepository
 	redisClient, err := NewRedisClient(cfg)
 	if err != nil {
 		log.Printf("connect redis failed, fallback to db-only feed: %v", err)
@@ -58,6 +59,7 @@ func New(cfg *Config) *App {
 		feedCacheRepo = repository.NewFeedCacheRepository(redisClient)
 		feedCacheInvalidator = repository.NewFeedCacheInvalidatorRepository(redisClient)
 		feedInvalidationEventPub = repository.NewFeedInvalidationEventRepository(redisClient)
+		feedInboxRepo = repository.NewFeedInboxRepository(redisClient)
 	}
 
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
@@ -67,6 +69,9 @@ func New(cfg *Config) *App {
 	feedService := service.NewFeedService(followRepo, postRepo)
 	if feedCacheRepo != nil {
 		feedService = feedService.WithCache(feedCacheRepo)
+	}
+	if feedInboxRepo != nil && cfg.Feed.Inbox.Enabled {
+		feedService = feedService.WithInbox(feedInboxRepo)
 	}
 	if feedCacheInvalidator != nil {
 		postService = postService.WithFeedCacheInvalidator(feedCacheInvalidator)

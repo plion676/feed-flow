@@ -33,13 +33,15 @@ func (f *fakePostFeedInvalidator) InvalidateHomeFeed(_ context.Context, userID i
 
 type fakePostInvalidationEventPublisher struct {
 	gotAuthorUserID int64
+	gotPostID       int64
 	called          int
 	err             error
 }
 
-func (f *fakePostInvalidationEventPublisher) PublishPostCreated(_ context.Context, authorUserID int64) error {
+func (f *fakePostInvalidationEventPublisher) PublishPostCreatedEvent(_ context.Context, authorUserID int64, postID int64) error {
 	f.called++
 	f.gotAuthorUserID = authorUserID
+	f.gotPostID = postID
 	return f.err
 }
 
@@ -200,6 +202,9 @@ func TestPostServiceCreate(t *testing.T) {
 			}
 			if tc.wantPublishEvent && tc.eventPublisher.gotAuthorUserID != tc.req.UserID {
 				t.Fatalf("unexpected event publisher user id: got=%d want=%d", tc.eventPublisher.gotAuthorUserID, tc.req.UserID)
+			}
+			if tc.wantPublishEvent && tc.eventPublisher.gotPostID <= 0 {
+				t.Fatalf("unexpected event publisher post id: got=%d", tc.eventPublisher.gotPostID)
 			}
 		})
 	}

@@ -24,6 +24,7 @@ const (
 type FeedInvalidationEvent struct {
 	Type       string `json:"type"`
 	AuthorID   int64  `json:"author_id"`
+	PostID     int64  `json:"post_id"`
 	OccurredAt int64  `json:"occurred_at"`
 }
 
@@ -47,6 +48,10 @@ func NewFeedInvalidationEventRepository(client *redis.Client) *FeedInvalidationE
 }
 
 func (r *FeedInvalidationEventRepository) PublishPostCreated(ctx context.Context, authorUserID int64) error {
+	return r.PublishPostCreatedEvent(ctx, authorUserID, 0)
+}
+
+func (r *FeedInvalidationEventRepository) PublishPostCreatedEvent(ctx context.Context, authorUserID int64, postID int64) error {
 	if authorUserID <= 0 {
 		return fmt.Errorf("author user id must be positive")
 	}
@@ -54,6 +59,7 @@ func (r *FeedInvalidationEventRepository) PublishPostCreated(ctx context.Context
 	event := FeedInvalidationEvent{
 		Type:       "post_created",
 		AuthorID:   authorUserID,
+		PostID:     postID,
 		OccurredAt: time.Now().Unix(),
 	}
 	payloadBytes, err := json.Marshal(event)
@@ -70,6 +76,18 @@ func (r *FeedInvalidationEventRepository) PublishPostCreated(ctx context.Context
 }
 
 func (r *FeedInvalidationEventRepository) ConsumePostCreated(ctx context.Context, handler func(context.Context, int64) error) error {
+	if handler == nil {
+		return fmt.Errorf("post created handler cannot be nil")
+	}
+	return r.ConsumePostCreatedEvents(ctx, func(ctx context.Context, event FeedInvalidationEvent) error {
+		return handler(ctx, event.AuthorID)
+	})
+}
+
+func (r *FeedInvalidationEventRepository) ConsumePostCreatedEvents(
+	ctx context.Context,
+	handler func(context.Context, FeedInvalidationEvent) error,
+) error {
 	if handler == nil {
 		return fmt.Errorf("post created handler cannot be nil")
 	}
@@ -97,7 +115,7 @@ func (r *FeedInvalidationEventRepository) consumeByStreamID(
 	ctx context.Context,
 	streamID string,
 	block time.Duration,
-	handler func(context.Context, int64) error,
+	handler func(context.Context, FeedInvalidationEvent) error,
 ) error {
 	streams, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    r.groupName,
@@ -128,7 +146,7 @@ func (r *FeedInvalidationEventRepository) consumeByStreamID(
 			} else if event.Type != "post_created" || event.AuthorID <= 0 {
 				// Unknown type/invalid payload: ack and skip.
 				shouldAck = true
-			} else if err := handler(ctx, event.AuthorID); err == nil {
+			} else if err := handler(ctx, event); err == nil {
 				shouldAck = true
 			}
 

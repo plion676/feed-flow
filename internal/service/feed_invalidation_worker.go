@@ -14,10 +14,22 @@ type workerFeedCacheInvalidator interface {
 	InvalidateHomeFeed(ctx context.Context, userID int64) error
 }
 
+type workerFeedInboxFanout interface {
+	FanoutPostToFollowers(ctx context.Context, followerIDs []int64, postID int64, occurredAt int64) error
+}
+
+type PostCreatedEvent struct {
+	AuthorUserID int64
+	PostID       int64
+	OccurredAt   int64
+}
+
 // FeedInvalidationWorker handles async cache invalidation events.
 type FeedInvalidationWorker struct {
 	followRepo      workerFollowRepository
 	feedInvalidator workerFeedCacheInvalidator
+	hybridPolicy    *FeedHybridPolicy
+	inboxFanout     workerFeedInboxFanout
 }
 
 const defaultFollowerInvalidationWorkers = 20
@@ -26,10 +38,30 @@ func NewFeedInvalidationWorker(followRepo workerFollowRepository, feedInvalidato
 	return &FeedInvalidationWorker{
 		followRepo:      followRepo,
 		feedInvalidator: feedInvalidator,
+		hybridPolicy:    NewFeedHybridPolicy(0),
 	}
 }
 
 func (w *FeedInvalidationWorker) HandlePostCreated(ctx context.Context, authorUserID int64) error {
+	return w.HandlePostCreatedEvent(ctx, PostCreatedEvent{
+		AuthorUserID: authorUserID,
+	})
+}
+
+func (w *FeedInvalidationWorker) WithHybridPolicy(policy *FeedHybridPolicy) *FeedInvalidationWorker {
+	if policy != nil {
+		w.hybridPolicy = policy
+	}
+	return w
+}
+
+func (w *FeedInvalidationWorker) WithInboxFanout(inboxFanout workerFeedInboxFanout) *FeedInvalidationWorker {
+	w.inboxFanout = inboxFanout
+	return w
+}
+
+func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, event PostCreatedEvent) error {
+	authorUserID := event.AuthorUserID
 	if authorUserID <= 0 {
 		return nil
 	}
@@ -43,6 +75,16 @@ func (w *FeedInvalidationWorker) HandlePostCreated(ctx context.Context, authorUs
 	}
 	if len(followerIDs) == 0 {
 		return nil
+	}
+
+	mode := FeedDeliveryPullOnly
+	if w.hybridPolicy != nil {
+		mode = w.hybridPolicy.DecideByFollowerCount(len(followerIDs))
+	}
+	if mode == FeedDeliveryPushAndPull && w.inboxFanout != nil && event.PostID > 0 {
+		if err := w.inboxFanout.FanoutPostToFollowers(ctx, followerIDs, event.PostID, event.OccurredAt); err != nil {
+			return fmt.Errorf("push inbox fanout failed for post_id=%d: %w", event.PostID, err)
+		}
 	}
 
 	workerCount := defaultFollowerInvalidationWorkers

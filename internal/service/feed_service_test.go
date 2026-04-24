@@ -31,9 +31,11 @@ type fakeFeedPostRepo struct {
 	err   error
 
 	gotUserIDs  []int64
+	gotPostIDs  []int64
 	gotLastPost int64
 	gotLimit    int
 	calledTimes int
+	idsCalled   int
 }
 
 func (r *fakeFeedPostRepo) ListByUserIDs(_ context.Context, userIDs []int64, lastPostID int64, limit int) ([]*model.Post, error) {
@@ -73,6 +75,65 @@ func (r *fakeFeedPostRepo) ListByUserIDs(_ context.Context, userIDs []int64, las
 		filtered = filtered[:limit]
 	}
 
+	return filtered, nil
+}
+
+func (r *fakeFeedPostRepo) ListByIDs(_ context.Context, postIDs []int64) ([]*model.Post, error) {
+	r.idsCalled++
+	r.gotPostIDs = append([]int64(nil), postIDs...)
+	if r.err != nil {
+		return nil, r.err
+	}
+
+	byID := make(map[int64]*model.Post, len(r.posts))
+	for _, post := range r.posts {
+		if post.Status != 1 {
+			continue
+		}
+		byID[post.ID] = post
+	}
+
+	ordered := make([]*model.Post, 0, len(postIDs))
+	for _, postID := range postIDs {
+		post, ok := byID[postID]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, post)
+	}
+	return ordered, nil
+}
+
+type fakeFeedInboxRepo struct {
+	postIDsByUser map[int64][]int64
+	err           error
+
+	gotUserID     int64
+	gotLastPostID int64
+	gotLimit      int
+	called        int
+}
+
+func (r *fakeFeedInboxRepo) ListPostIDsByCursor(_ context.Context, userID int64, lastPostID int64, limit int) ([]int64, error) {
+	r.called++
+	r.gotUserID = userID
+	r.gotLastPostID = lastPostID
+	r.gotLimit = limit
+	if r.err != nil {
+		return nil, r.err
+	}
+
+	source := r.postIDsByUser[userID]
+	filtered := make([]int64, 0, len(source))
+	for _, postID := range source {
+		if lastPostID > 0 && postID >= lastPostID {
+			continue
+		}
+		filtered = append(filtered, postID)
+		if len(filtered) >= limit {
+			break
+		}
+	}
 	return filtered, nil
 }
 
@@ -401,4 +462,190 @@ func TestFeedServiceGetHomeFeedCache(t *testing.T) {
 			t.Fatalf("db repository should be called when cache get fails, got=%d", postRepo.calledTimes)
 		}
 	})
+}
+
+func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+
+	t.Run("inbox hit should merge with pull results to keep pull-only authors", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002, 1003}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 11, UserID: 1003, Content: "pull-only", Status: 1, CreatedAt: now},
+				{ID: 10, UserID: 1002, Content: "p10", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 9, UserID: 1001, Content: "p9", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 8, UserID: 1002, Content: "p8", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{
+			postIDsByUser: map[int64][]int64{
+				1001: {10, 8},
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithInbox(inboxRepo)
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("unexpected inbox result: %+v", got)
+		}
+		if got.Items[0].PostID != 11 || got.Items[1].PostID != 10 || got.Items[2].PostID != 9 {
+			t.Fatalf("unexpected inbox order: %+v", got.Items)
+		}
+		if !got.HasMore || got.NextCursor != 9 {
+			t.Fatalf("unexpected inbox paging: has_more=%v next=%d", got.HasMore, got.NextCursor)
+		}
+		if postRepo.calledTimes != 1 {
+			t.Fatalf("pull query should still run for merge, pull_calls=%d", postRepo.calledTimes)
+		}
+		if postRepo.idsCalled != 1 {
+			t.Fatalf("expected ListByIDs called once, got=%d", postRepo.idsCalled)
+		}
+	})
+
+	t.Run("inbox miss should fallback pull", func(t *testing.T) {
+		t.Parallel()
+
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 9, UserID: 1001, Content: "p9", Status: 1, CreatedAt: now},
+				{ID: 8, UserID: 1002, Content: "p8", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{
+			postIDsByUser: map[int64][]int64{},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithInbox(inboxRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 2 {
+			t.Fatalf("unexpected fallback result: %+v", got)
+		}
+		if postRepo.calledTimes != 1 {
+			t.Fatalf("expected pull query called once on inbox miss, got=%d", postRepo.calledTimes)
+		}
+		if postRepo.idsCalled != 0 {
+			t.Fatalf("unexpected inbox detail query on miss, ids_called=%d", postRepo.idsCalled)
+		}
+	})
+
+	t.Run("inbox read error should fallback pull", func(t *testing.T) {
+		t.Parallel()
+
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 7, UserID: 1001, Content: "p7", Status: 1, CreatedAt: now},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{err: errors.New("redis timeout")}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{},
+			postRepo,
+		).WithInbox(inboxRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 1 || got.Items[0].PostID != 7 {
+			t.Fatalf("unexpected fallback result on inbox error: %+v", got)
+		}
+		if postRepo.calledTimes != 1 {
+			t.Fatalf("expected pull path called once on inbox error, got=%d", postRepo.calledTimes)
+		}
+	})
+
+	t.Run("inbox backfill should continue scanning when detail posts are missing", func(t *testing.T) {
+		t.Parallel()
+
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 6, UserID: 1001, Content: "p6", Status: 1, CreatedAt: now},
+				{ID: 5, UserID: 1001, Content: "p5", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{
+			postIDsByUser: map[int64][]int64{
+				1001: {10, 9, 8, 7, 6, 5},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{err: errors.New("pull unavailable")},
+			postRepo,
+		).WithInbox(inboxRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  2,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 2 {
+			t.Fatalf("unexpected backfill result: %+v", got)
+		}
+		if got.Items[0].PostID != 6 || got.Items[1].PostID != 5 {
+			t.Fatalf("unexpected backfill items: %+v", got.Items)
+		}
+		if got.HasMore {
+			t.Fatalf("unexpected has_more on backfill result: %+v", got)
+		}
+		if postRepo.idsCalled < 2 {
+			t.Fatalf("expected multiple ListByIDs calls for backfill, got=%d", postRepo.idsCalled)
+		}
+		if postRepo.calledTimes != 0 {
+			t.Fatalf("pull query should be skipped when follow repo fails and inbox hit succeeds, pull_calls=%d", postRepo.calledTimes)
+		}
+	})
+}
+
+func TestMergeFeedPosts(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 24, 13, 0, 0, 0, time.UTC)
+	inboxPosts := []*model.Post{
+		{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now},
+		{ID: 8, UserID: 1002, Content: "inbox-8", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+	}
+	pullPosts := []*model.Post{
+		{ID: 11, UserID: 1003, Content: "pull-11", Status: 1, CreatedAt: now.Add(time.Minute)},
+		{ID: 10, UserID: 1002, Content: "pull-10", Status: 1, CreatedAt: now},
+		{ID: 9, UserID: 1001, Content: "pull-9", Status: 1, CreatedAt: now.Add(-time.Minute)},
+	}
+
+	merged := mergeFeedPosts(inboxPosts, pullPosts)
+	if len(merged) != 4 {
+		t.Fatalf("unexpected merged count: got=%d want=4", len(merged))
+	}
+	wantOrder := []int64{11, 10, 9, 8}
+	for i, wantID := range wantOrder {
+		if merged[i].ID != wantID {
+			t.Fatalf("unexpected merged order at %d: got=%d want=%d", i, merged[i].ID, wantID)
+		}
+	}
 }

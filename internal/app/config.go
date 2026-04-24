@@ -13,6 +13,7 @@ type Config struct {
 	MySQL MySQLConfig `yaml:"mysql"`
 	Redis RedisConfig `yaml:"redis"`
 	JWT   JWTConfig   `yaml:"jwt"`
+	Feed  FeedConfig  `yaml:"feed"`
 }
 
 type AppConfig struct {
@@ -36,6 +37,23 @@ type RedisConfig struct {
 type JWTConfig struct {
 	Secret      string `yaml:"secret"`
 	ExpireHours int    `yaml:"expire_hours"`
+}
+
+type FeedConfig struct {
+	Hybrid FeedHybridConfig `yaml:"hybrid"`
+	Inbox  FeedInboxConfig  `yaml:"inbox"`
+}
+
+type FeedHybridConfig struct {
+	// PushFollowerThreshold controls push/pull split:
+	// follower_count <= threshold => push_and_pull; otherwise => pull_only.
+	// 0 means pull_only for all authors.
+	PushFollowerThreshold int `yaml:"push_follower_threshold"`
+}
+
+type FeedInboxConfig struct {
+	Enabled  bool  `yaml:"enabled"`
+	MaxItems int64 `yaml:"max_items"`
 }
 
 // LoadConfig reads a yaml config file into memory.
