@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -18,6 +19,9 @@ const (
 	defaultFeedInvalidationGroupName = "feed-invalidation-group"
 	defaultFeedInvalidationCount     = 20
 	defaultFeedInvalidationBlock     = 2 * time.Second
+	defaultReclaimMinIdle            = 30 * time.Second
+	defaultIdleLogInterval           = 30 * time.Second
+	defaultReclaimBatchPerLoop       = 5
 )
 
 // FeedInvalidationEvent is the payload for async feed cache invalidation jobs.
@@ -35,6 +39,8 @@ type FeedInvalidationEventRepository struct {
 	consumerName string
 	count        int64
 	block        time.Duration
+	reclaimIdle  time.Duration
+	idleLogAfter time.Duration
 }
 
 func NewFeedInvalidationEventRepository(client *redis.Client) *FeedInvalidationEventRepository {
@@ -44,6 +50,8 @@ func NewFeedInvalidationEventRepository(client *redis.Client) *FeedInvalidationE
 		consumerName: fmt.Sprintf("feed-worker-%d", os.Getpid()),
 		count:        defaultFeedInvalidationCount,
 		block:        defaultFeedInvalidationBlock,
+		reclaimIdle:  defaultReclaimMinIdle,
+		idleLogAfter: defaultIdleLogInterval,
 	}
 }
 
@@ -95,18 +103,47 @@ func (r *FeedInvalidationEventRepository) ConsumePostCreatedEvents(
 		return err
 	}
 
+	lastProgress := time.Now()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 
-		// 1) Retry this consumer's pending messages first.
-		if err := r.consumeByStreamID(ctx, "0", 0, handler); err != nil {
+		processed := 0
+
+		// 1) Reclaim orphan pending from crashed consumers.
+		n, err := r.reclaimPending(ctx, handler)
+		if err != nil {
 			return err
 		}
-		// 2) Then block for new messages.
-		if err := r.consumeByStreamID(ctx, ">", r.block, handler); err != nil {
+		processed += n
+
+		// 2) Retry this consumer's pending messages first.
+		n, err = r.consumeByStreamID(ctx, "0", 0, handler)
+		if err != nil {
 			return err
+		}
+		processed += n
+
+		// 3) Then block for new messages.
+		n, err = r.consumeByStreamID(ctx, ">", r.block, handler)
+		if err != nil {
+			return err
+		}
+		processed += n
+
+		if processed > 0 {
+			lastProgress = time.Now()
+			continue
+		}
+		if time.Since(lastProgress) >= r.idleLogAfter {
+			log.Printf(
+				"feed invalidation stream waiting group=%s consumer=%s block=%s",
+				r.groupName,
+				r.consumerName,
+				r.block,
+			)
+			lastProgress = time.Now()
 		}
 	}
 }
@@ -116,7 +153,7 @@ func (r *FeedInvalidationEventRepository) consumeByStreamID(
 	streamID string,
 	block time.Duration,
 	handler func(context.Context, FeedInvalidationEvent) error,
-) error {
+) (int, error) {
 	streams, err := r.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    r.groupName,
 		Consumer: r.consumerName,
@@ -127,37 +164,152 @@ func (r *FeedInvalidationEventRepository) consumeByStreamID(
 	}).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			return nil
+			return 0, nil
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return 0, ctx.Err()
 		}
-		return fmt.Errorf("read group message stream_id=%s: %w", streamID, err)
+		return 0, fmt.Errorf(
+			"read group message stream_id=%s group=%s consumer=%s: %w",
+			streamID,
+			r.groupName,
+			r.consumerName,
+			err,
+		)
 	}
 
+	processed := 0
 	for _, stream := range streams {
-		for _, msg := range stream.Messages {
-			shouldAck := false
+		if err := r.handleMessages(ctx, stream.Messages, "xreadgroup", handler); err != nil {
+			return processed, err
+		}
+		processed += len(stream.Messages)
+	}
 
-			event, ok := decodeFeedInvalidationEvent(msg.Values["payload"])
-			if !ok {
-				// Drop malformed messages to prevent poison-message infinite retry.
-				shouldAck = true
-			} else if event.Type != "post_created" || event.AuthorID <= 0 {
+	return processed, nil
+}
+
+func (r *FeedInvalidationEventRepository) reclaimPending(
+	ctx context.Context,
+	handler func(context.Context, FeedInvalidationEvent) error,
+) (int, error) {
+	if r.reclaimIdle <= 0 {
+		return 0, nil
+	}
+
+	processed := 0
+	start := "0-0"
+	for i := 0; i < defaultReclaimBatchPerLoop; i++ {
+		messages, nextStart, err := r.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+			Stream:   feedInvalidationStreamKey,
+			Group:    r.groupName,
+			Consumer: r.consumerName,
+			MinIdle:  r.reclaimIdle,
+			Start:    start,
+			Count:    r.count,
+		}).Result()
+		if err != nil {
+			if errors.Is(err, redis.Nil) {
+				return processed, nil
+			}
+			if ctx.Err() != nil {
+				return processed, ctx.Err()
+			}
+			return processed, fmt.Errorf(
+				"xautoclaim pending group=%s consumer=%s start=%s: %w",
+				r.groupName,
+				r.consumerName,
+				start,
+				err,
+			)
+		}
+		if len(messages) == 0 {
+			return processed, nil
+		}
+
+		if err := r.handleMessages(ctx, messages, "xautoclaim", handler); err != nil {
+			return processed, err
+		}
+		processed += len(messages)
+
+		if nextStart == "" || nextStart == "0-0" || nextStart == start {
+			return processed, nil
+		}
+		start = nextStart
+	}
+
+	return processed, nil
+}
+
+func (r *FeedInvalidationEventRepository) handleMessages(
+	ctx context.Context,
+	messages []redis.XMessage,
+	readSource string,
+	handler func(context.Context, FeedInvalidationEvent) error,
+) error {
+	for _, msg := range messages {
+		shouldAck := false
+		event := FeedInvalidationEvent{}
+
+		decodedEvent, ok := decodeFeedInvalidationEvent(msg.Values["payload"])
+		if !ok {
+			// Drop malformed messages to prevent poison-message infinite retry.
+			shouldAck = true
+			log.Printf(
+				"drop malformed feed event source=%s stream_id=%s group=%s consumer=%s",
+				readSource,
+				msg.ID,
+				r.groupName,
+				r.consumerName,
+			)
+		} else {
+			event = decodedEvent
+			if event.Type != "post_created" || event.AuthorID <= 0 {
 				// Unknown type/invalid payload: ack and skip.
 				shouldAck = true
+				log.Printf(
+					"skip invalid feed event source=%s stream_id=%s type=%s author_id=%d post_id=%d",
+					readSource,
+					msg.ID,
+					event.Type,
+					event.AuthorID,
+					event.PostID,
+				)
 			} else if err := handler(ctx, event); err == nil {
 				shouldAck = true
+			} else {
+				log.Printf(
+					"handle feed event failed source=%s stream_id=%s author_id=%d post_id=%d err=%v",
+					readSource,
+					msg.ID,
+					event.AuthorID,
+					event.PostID,
+					err,
+				)
 			}
+		}
 
-			if shouldAck {
-				if err := r.client.XAck(ctx, feedInvalidationStreamKey, r.groupName, msg.ID).Err(); err != nil {
-					return fmt.Errorf("ack message %s: %w", msg.ID, err)
-				}
+		if shouldAck {
+			if err := r.client.XAck(ctx, feedInvalidationStreamKey, r.groupName, msg.ID).Err(); err != nil {
+				log.Printf(
+					"ack feed event failed source=%s stream_id=%s author_id=%d post_id=%d err=%v",
+					readSource,
+					msg.ID,
+					event.AuthorID,
+					event.PostID,
+					err,
+				)
+				return fmt.Errorf(
+					"ack feed event source=%s stream_id=%s author_id=%d post_id=%d: %w",
+					readSource,
+					msg.ID,
+					event.AuthorID,
+					event.PostID,
+					err,
+				)
 			}
 		}
 	}
-
 	return nil
 }
 
