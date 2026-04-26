@@ -42,6 +42,7 @@ type JWTConfig struct {
 type FeedConfig struct {
 	Hybrid FeedHybridConfig `yaml:"hybrid"`
 	Inbox  FeedInboxConfig  `yaml:"inbox"`
+	Worker FeedWorkerConfig `yaml:"worker"`
 }
 
 type FeedHybridConfig struct {
@@ -54,6 +55,28 @@ type FeedHybridConfig struct {
 type FeedInboxConfig struct {
 	Enabled  bool  `yaml:"enabled"`
 	MaxItems int64 `yaml:"max_items"`
+}
+
+type FeedWorkerConfig struct {
+	// ReclaimMinIdleSeconds controls the minimum idle time for XAUTOCLAIM.
+	ReclaimMinIdleSeconds int `yaml:"reclaim_min_idle_seconds"`
+	// IdleLogIntervalSeconds controls the interval for idle "waiting stream" logs.
+	IdleLogIntervalSeconds int `yaml:"idle_log_interval_seconds"`
+	// ReclaimBatchPerLoop controls max XAUTOCLAIM iterations per consume loop.
+	ReclaimBatchPerLoop int `yaml:"reclaim_batch_per_loop"`
+
+	// RetryInitialBackoffMS is the initial worker consume retry backoff in ms.
+	RetryInitialBackoffMS int `yaml:"retry_initial_backoff_ms"`
+	// RetryMaxBackoffMS is the max worker consume retry backoff in ms.
+	RetryMaxBackoffMS int `yaml:"retry_max_backoff_ms"`
+	// RetryJitterPercent adds +/- jitter percent to the sleep backoff.
+	RetryJitterPercent int `yaml:"retry_jitter_percent"`
+	// RetryMaxAttempts controls how many handler failures before moving to DLQ.
+	RetryMaxAttempts int `yaml:"retry_max_attempts"`
+	// RetryCounterTTLSeconds controls TTL for per-stream retry counters.
+	RetryCounterTTLSeconds int `yaml:"retry_counter_ttl_seconds"`
+	// DLQStreamKey is the Redis stream key for poison/retry-exhausted events.
+	DLQStreamKey string `yaml:"dlq_stream_key"`
 }
 
 // LoadConfig reads a yaml config file into memory.

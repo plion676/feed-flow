@@ -21,7 +21,26 @@ feed:
   hybrid:
     # <= threshold => push_and_pull; > threshold => pull_only.
     # keep 0 to fully fallback to pull v1.
-    push_follower_threshold: 0
+    push_follower_threshold: 100
   inbox:
-    enabled: false
+    enabled: true
     max_items: 1000
+  worker:
+    # XAUTOCLAIM min idle seconds before reclaiming pending from other consumers.
+    reclaim_min_idle_seconds: 30
+    # Idle "waiting stream" log interval.
+    idle_log_interval_seconds: 30
+    # Max reclaim batches per consume loop.
+    reclaim_batch_per_loop: 5
+
+    # Consume retry backoff settings.
+    retry_initial_backoff_ms: 1000
+    retry_max_backoff_ms: 30000
+    # +/- jitter percentage for each retry sleep.
+    retry_jitter_percent: 20
+    # Max handler failures before moving stream message to DLQ.
+    retry_max_attempts: 5
+    # TTL for per-stream retry counters.
+    retry_counter_ttl_seconds: 86400
+    # DLQ stream key for retry-exhausted events.
+    dlq_stream_key: "feed:invalidation:dlq"

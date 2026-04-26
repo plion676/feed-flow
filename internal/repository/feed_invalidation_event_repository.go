@@ -14,6 +14,7 @@ import (
 )
 
 const feedInvalidationStreamKey = "feed:invalidation:events"
+const defaultFeedInvalidationDLQStreamKey = "feed:invalidation:dlq"
 
 const (
 	defaultFeedInvalidationGroupName = "feed-invalidation-group"
@@ -22,6 +23,8 @@ const (
 	defaultReclaimMinIdle            = 30 * time.Second
 	defaultIdleLogInterval           = 30 * time.Second
 	defaultReclaimBatchPerLoop       = 5
+	defaultRetryMaxAttempts          = 5
+	defaultRetryCounterTTL           = 24 * time.Hour
 )
 
 // FeedInvalidationEvent is the payload for async feed cache invalidation jobs.
@@ -32,27 +35,79 @@ type FeedInvalidationEvent struct {
 	OccurredAt int64  `json:"occurred_at"`
 }
 
+type feedInvalidationDLQEvent struct {
+	StreamID   string                `json:"stream_id"`
+	Source     string                `json:"source"`
+	RetryCount int64                 `json:"retry_count"`
+	FailedAt   int64                 `json:"failed_at"`
+	LastError  string                `json:"last_error"`
+	Event      FeedInvalidationEvent `json:"event"`
+	Payload    string                `json:"payload"`
+}
+
 // FeedInvalidationEventRepository publishes invalidation events to Redis stream.
 type FeedInvalidationEventRepository struct {
-	client       *redis.Client
-	groupName    string
-	consumerName string
-	count        int64
-	block        time.Duration
-	reclaimIdle  time.Duration
-	idleLogAfter time.Duration
+	client         *redis.Client
+	groupName      string
+	consumerName   string
+	count          int64
+	block          time.Duration
+	reclaimIdle    time.Duration
+	idleLogAfter   time.Duration
+	reclaimBatches int
+	retryMax       int
+	retryTTL       time.Duration
+	dlqStreamKey   string
+}
+
+type FeedInvalidationConsumerConfig struct {
+	ReclaimMinIdle  time.Duration
+	IdleLogInterval time.Duration
+	ReclaimBatches  int
+	RetryMax        int
+	RetryTTL        time.Duration
+	DLQStreamKey    string
 }
 
 func NewFeedInvalidationEventRepository(client *redis.Client) *FeedInvalidationEventRepository {
 	return &FeedInvalidationEventRepository{
-		client:       client,
-		groupName:    defaultFeedInvalidationGroupName,
-		consumerName: fmt.Sprintf("feed-worker-%d", os.Getpid()),
-		count:        defaultFeedInvalidationCount,
-		block:        defaultFeedInvalidationBlock,
-		reclaimIdle:  defaultReclaimMinIdle,
-		idleLogAfter: defaultIdleLogInterval,
+		client:         client,
+		groupName:      defaultFeedInvalidationGroupName,
+		consumerName:   fmt.Sprintf("feed-worker-%d", os.Getpid()),
+		count:          defaultFeedInvalidationCount,
+		block:          defaultFeedInvalidationBlock,
+		reclaimIdle:    defaultReclaimMinIdle,
+		idleLogAfter:   defaultIdleLogInterval,
+		reclaimBatches: defaultReclaimBatchPerLoop,
+		retryMax:       defaultRetryMaxAttempts,
+		retryTTL:       defaultRetryCounterTTL,
+		dlqStreamKey:   defaultFeedInvalidationDLQStreamKey,
 	}
+}
+
+func (r *FeedInvalidationEventRepository) WithConsumerConfig(cfg FeedInvalidationConsumerConfig) *FeedInvalidationEventRepository {
+	if r == nil {
+		return r
+	}
+	if cfg.ReclaimMinIdle > 0 {
+		r.reclaimIdle = cfg.ReclaimMinIdle
+	}
+	if cfg.IdleLogInterval > 0 {
+		r.idleLogAfter = cfg.IdleLogInterval
+	}
+	if cfg.ReclaimBatches > 0 {
+		r.reclaimBatches = cfg.ReclaimBatches
+	}
+	if cfg.RetryMax > 0 {
+		r.retryMax = cfg.RetryMax
+	}
+	if cfg.RetryTTL > 0 {
+		r.retryTTL = cfg.RetryTTL
+	}
+	if strings.TrimSpace(cfg.DLQStreamKey) != "" {
+		r.dlqStreamKey = strings.TrimSpace(cfg.DLQStreamKey)
+	}
+	return r
 }
 
 func (r *FeedInvalidationEventRepository) PublishPostCreated(ctx context.Context, authorUserID int64) error {
@@ -199,7 +254,11 @@ func (r *FeedInvalidationEventRepository) reclaimPending(
 
 	processed := 0
 	start := "0-0"
-	for i := 0; i < defaultReclaimBatchPerLoop; i++ {
+	reclaimBatches := r.reclaimBatches
+	if reclaimBatches <= 0 {
+		reclaimBatches = defaultReclaimBatchPerLoop
+	}
+	for i := 0; i < reclaimBatches; i++ {
 		messages, nextStart, err := r.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 			Stream:   feedInvalidationStreamKey,
 			Group:    r.groupName,
@@ -249,6 +308,7 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 ) error {
 	for _, msg := range messages {
 		shouldAck := false
+		clearRetryCounter := false
 		event := FeedInvalidationEvent{}
 
 		decodedEvent, ok := decodeFeedInvalidationEvent(msg.Values["payload"])
@@ -277,15 +337,12 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 				)
 			} else if err := handler(ctx, event); err == nil {
 				shouldAck = true
+				clearRetryCounter = true
 			} else {
-				log.Printf(
-					"handle feed event failed source=%s stream_id=%s author_id=%d post_id=%d err=%v",
-					readSource,
-					msg.ID,
-					event.AuthorID,
-					event.PostID,
-					err,
-				)
+				shouldAck, clearRetryCounter, err = r.handleHandlerFailure(ctx, msg, readSource, event, err)
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -308,9 +365,137 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 					err,
 				)
 			}
+			if clearRetryCounter {
+				r.clearRetryCounter(ctx, msg.ID)
+			}
 		}
 	}
 	return nil
+}
+
+func (r *FeedInvalidationEventRepository) handleHandlerFailure(
+	ctx context.Context,
+	msg redis.XMessage,
+	readSource string,
+	event FeedInvalidationEvent,
+	handlerErr error,
+) (ack bool, clearRetryCounter bool, err error) {
+	retryCount, err := r.bumpRetryCounter(ctx, msg.ID)
+	if err != nil {
+		return false, false, err
+	}
+
+	log.Printf(
+		"handle feed event failed source=%s stream_id=%s author_id=%d post_id=%d retry=%d/%d err=%v",
+		readSource,
+		msg.ID,
+		event.AuthorID,
+		event.PostID,
+		retryCount,
+		r.retryMax,
+		handlerErr,
+	)
+
+	if retryCount < int64(r.retryMax) {
+		return false, false, nil
+	}
+
+	if err := r.pushToDLQ(ctx, msg, readSource, event, retryCount, handlerErr); err != nil {
+		return false, false, err
+	}
+
+	log.Printf(
+		"move feed event to dlq stream_id=%s dlq_stream=%s retry=%d",
+		msg.ID,
+		r.dlqStreamKey,
+		retryCount,
+	)
+	// ACK original message only after DLQ write succeeds.
+	return true, true, nil
+}
+
+func (r *FeedInvalidationEventRepository) bumpRetryCounter(ctx context.Context, streamID string) (int64, error) {
+	if strings.TrimSpace(streamID) == "" {
+		return 0, fmt.Errorf("stream id cannot be empty")
+	}
+	key := buildRetryCounterKey(streamID)
+
+	retryCount, err := r.client.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("incr retry counter key=%s stream_id=%s: %w", key, streamID, err)
+	}
+	if r.retryTTL > 0 {
+		if err := r.client.Expire(ctx, key, r.retryTTL).Err(); err != nil {
+			return 0, fmt.Errorf("expire retry counter key=%s stream_id=%s: %w", key, streamID, err)
+		}
+	}
+	return retryCount, nil
+}
+
+func (r *FeedInvalidationEventRepository) clearRetryCounter(ctx context.Context, streamID string) {
+	if strings.TrimSpace(streamID) == "" {
+		return
+	}
+	key := buildRetryCounterKey(streamID)
+	if err := r.client.Del(ctx, key).Err(); err != nil {
+		log.Printf("clear retry counter failed key=%s stream_id=%s err=%v", key, streamID, err)
+	}
+}
+
+func (r *FeedInvalidationEventRepository) pushToDLQ(
+	ctx context.Context,
+	msg redis.XMessage,
+	readSource string,
+	event FeedInvalidationEvent,
+	retryCount int64,
+	handlerErr error,
+) error {
+	if strings.TrimSpace(r.dlqStreamKey) == "" {
+		return fmt.Errorf("dlq stream key is empty")
+	}
+
+	dlqEvent := feedInvalidationDLQEvent{
+		StreamID:   msg.ID,
+		Source:     readSource,
+		RetryCount: retryCount,
+		FailedAt:   time.Now().Unix(),
+		LastError:  handlerErr.Error(),
+		Event:      event,
+		Payload:    stringifyPayload(msg.Values["payload"]),
+	}
+
+	payloadBytes, err := json.Marshal(dlqEvent)
+	if err != nil {
+		return fmt.Errorf("marshal dlq event stream_id=%s: %w", msg.ID, err)
+	}
+	if err := r.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: r.dlqStreamKey,
+		Values: map[string]any{
+			"payload": string(payloadBytes),
+		},
+	}).Err(); err != nil {
+		return fmt.Errorf("xadd dlq stream=%s stream_id=%s: %w", r.dlqStreamKey, msg.ID, err)
+	}
+	return nil
+}
+
+func buildRetryCounterKey(streamID string) string {
+	return fmt.Sprintf("feed:invalidation:retry:%s", streamID)
+}
+
+func stringifyPayload(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	default:
+		bytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(bytes)
+	}
 }
 
 func (r *FeedInvalidationEventRepository) ensureConsumerGroup(ctx context.Context) error {

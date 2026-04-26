@@ -16,3 +16,20 @@ redis:
 jwt:
   secret: "change-me-in-local-config"
   expire_hours: 72
+
+feed:
+  hybrid:
+    push_follower_threshold: 100
+  inbox:
+    enabled: true
+    max_items: 1000
+  worker:
+    reclaim_min_idle_seconds: 30
+    idle_log_interval_seconds: 30
+    reclaim_batch_per_loop: 5
+    retry_initial_backoff_ms: 1000
+    retry_max_backoff_ms: 30000
+    retry_jitter_percent: 20
+    retry_max_attempts: 5
+    retry_counter_ttl_seconds: 86400
+    dlq_stream_key: "feed:invalidation:dlq"

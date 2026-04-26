@@ -3,6 +3,7 @@ package repository
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 type fakeRedisError string
@@ -107,6 +108,82 @@ func TestDecodeFeedInvalidationEvent(t *testing.T) {
 			}
 			if got.Type != tc.wantType || got.AuthorID != tc.wantID || got.PostID != tc.wantPost {
 				t.Fatalf("unexpected event: got=%+v", got)
+			}
+		})
+	}
+}
+
+func TestWithConsumerConfig(t *testing.T) {
+	t.Parallel()
+
+	repo := &FeedInvalidationEventRepository{
+		reclaimIdle:    defaultReclaimMinIdle,
+		idleLogAfter:   defaultIdleLogInterval,
+		reclaimBatches: defaultReclaimBatchPerLoop,
+		retryMax:       defaultRetryMaxAttempts,
+		retryTTL:       defaultRetryCounterTTL,
+		dlqStreamKey:   defaultFeedInvalidationDLQStreamKey,
+	}
+
+	repo = repo.WithConsumerConfig(FeedInvalidationConsumerConfig{
+		ReclaimMinIdle:  45 * time.Second,
+		IdleLogInterval: 15 * time.Second,
+		ReclaimBatches:  9,
+		RetryMax:        7,
+		RetryTTL:        10 * time.Hour,
+		DLQStreamKey:    "custom:dlq:stream",
+	})
+
+	if repo.reclaimIdle != 45*time.Second {
+		t.Fatalf("unexpected reclaim idle: %s", repo.reclaimIdle)
+	}
+	if repo.idleLogAfter != 15*time.Second {
+		t.Fatalf("unexpected idle log interval: %s", repo.idleLogAfter)
+	}
+	if repo.reclaimBatches != 9 {
+		t.Fatalf("unexpected reclaim batches: %d", repo.reclaimBatches)
+	}
+	if repo.retryMax != 7 {
+		t.Fatalf("unexpected retry max: %d", repo.retryMax)
+	}
+	if repo.retryTTL != 10*time.Hour {
+		t.Fatalf("unexpected retry ttl: %s", repo.retryTTL)
+	}
+	if repo.dlqStreamKey != "custom:dlq:stream" {
+		t.Fatalf("unexpected dlq stream key: %s", repo.dlqStreamKey)
+	}
+}
+
+func TestBuildRetryCounterKey(t *testing.T) {
+	t.Parallel()
+
+	got := buildRetryCounterKey("1777196829098-0")
+	want := "feed:invalidation:retry:1777196829098-0"
+	if got != want {
+		t.Fatalf("unexpected key: got=%s want=%s", got, want)
+	}
+}
+
+func TestStringifyPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload any
+		want    string
+	}{
+		{name: "string", payload: "abc", want: "abc"},
+		{name: "bytes", payload: []byte("xyz"), want: "xyz"},
+		{name: "object", payload: map[string]any{"a": 1}, want: `{"a":1}`},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := stringifyPayload(tc.payload)
+			if got != tc.want {
+				t.Fatalf("unexpected payload stringify: got=%s want=%s", got, tc.want)
 			}
 		})
 	}
