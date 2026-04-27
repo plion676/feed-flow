@@ -48,6 +48,7 @@ func New(cfg *Config) *App {
 	userCountRepo := repository.NewUserCountRepository(db)
 	postRepo := repository.NewPostRepository(db)
 	followRepo := repository.NewFollowRepository(db)
+	feedDLQOperatorRepo := repository.NewFeedDLQOperatorRepository(db)
 	var feedCacheRepo *repository.FeedCacheRepository
 	var feedCacheInvalidator *repository.FeedCacheInvalidatorRepository
 	var feedInvalidationEventPub *repository.FeedInvalidationEventRepository
@@ -86,9 +87,15 @@ func New(cfg *Config) *App {
 	postHandler := handler.NewPostHandler(postService)
 	followHandler := handler.NewFollowHandler(followService)
 	feedHandler := handler.NewFeedHandler(feedService)
+	var feedDLQHandler *handler.FeedDLQHandler
+	if feedInvalidationEventPub != nil {
+		feedDLQService := service.NewFeedDLQService(feedInvalidationEventPub)
+		feedDLQAccessService := service.NewFeedDLQAccessService(feedDLQOperatorRepo)
+		feedDLQHandler = handler.NewFeedDLQHandler(feedDLQService, feedDLQAccessService)
+	}
 	authMiddleware := middleware.AuthJWT(jwtManager)
 
-	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, followHandler, feedHandler, authMiddleware)
+	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, followHandler, feedHandler, feedDLQHandler, authMiddleware)
 
 	return &App{
 		Config: cfg,

@@ -17,6 +17,7 @@ const (
 	CodeInternal            = 1003
 	CodeNotImplemented      = 1004
 	CodeNotFound            = 1005
+	CodeForbidden           = 1006
 	CodeInvalidCredentials  = 2002
 	CodeUserAlreadyExists   = 2001
 	CodePostNotFound        = 3001
@@ -26,6 +27,7 @@ const (
 var (
 	ErrBadRequest          = &Error{Code: CodeBadRequest, Message: "bad request"}
 	ErrUnauthorized        = &Error{Code: CodeUnauthorized, Message: "unauthorized"}
+	ErrForbidden           = &Error{Code: CodeForbidden, Message: "forbidden"}
 	ErrInternal            = &Error{Code: CodeInternal, Message: "internal server error"}
 	ErrNotImplemented      = &Error{Code: CodeNotImplemented, Message: "not implemented yet"}
 	ErrNotFound            = &Error{Code: CodeNotFound, Message: "resource not found"}

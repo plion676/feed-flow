@@ -14,6 +14,7 @@ func RegisterRoutes(
 	postHandler *handler.PostHandler,
 	followHandler *handler.FollowHandler,
 	feedHandler *handler.FeedHandler,
+	feedDLQHandler *handler.FeedDLQHandler,
 	authMiddleware gin.HandlerFunc,
 ) {
 	healthHandler := handler.NewHealthHandler()
@@ -53,6 +54,10 @@ func RegisterRoutes(
 		feedGroup.Use(authMiddleware)
 		{
 			feedGroup.GET("", feedHandler.GetHomeFeed)
+			if feedDLQHandler != nil {
+				feedGroup.GET("/dlq", feedDLQHandler.List)
+				feedGroup.POST("/dlq/replay", feedDLQHandler.Replay)
+			}
 		}
 	}
 }

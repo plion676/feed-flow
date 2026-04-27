@@ -16,6 +16,8 @@ func httpStatusFromError(err *xerror.Error) int {
 		return http.StatusBadRequest
 	case xerror.ErrUnauthorized:
 		return http.StatusUnauthorized
+	case xerror.ErrForbidden:
+		return http.StatusForbidden
 	case xerror.ErrInvalidCredentials:
 		return http.StatusUnauthorized
 	case xerror.ErrUserAlreadyExists:

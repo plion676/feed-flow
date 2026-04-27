@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type fakeRedisError string
@@ -186,5 +188,52 @@ func TestStringifyPayload(t *testing.T) {
 				t.Fatalf("unexpected payload stringify: got=%s want=%s", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestDecodeDLQRecord(t *testing.T) {
+	t.Parallel()
+
+	msg := redis.XMessage{
+		ID: "1740000000000-0",
+		Values: map[string]any{
+			"payload": `{"stream_id":"1739999999999-0","source":"xreadgroup","retry_count":5,"failed_at":1740000000,"last_error":"redis timeout","event":{"type":"post_created","author_id":1001,"post_id":3001,"occurred_at":1739999999},"payload":"{\"type\":\"post_created\",\"author_id\":1001,\"post_id\":3001,\"occurred_at\":1739999999}"}`,
+		},
+	}
+
+	got, err := decodeDLQRecord(msg)
+	if err != nil {
+		t.Fatalf("unexpected decode error: %v", err)
+	}
+	if got.MessageID != "1740000000000-0" {
+		t.Fatalf("unexpected message id: %s", got.MessageID)
+	}
+	if got.StreamID != "1739999999999-0" || got.Event.PostID != 3001 {
+		t.Fatalf("unexpected decoded record: %+v", got)
+	}
+}
+
+func TestDecodeDLQRecordInvalidPayload(t *testing.T) {
+	t.Parallel()
+
+	msg := redis.XMessage{
+		ID: "1740000000000-0",
+		Values: map[string]any{
+			"payload": `{"stream_id":"broken"`,
+		},
+	}
+
+	if _, err := decodeDLQRecord(msg); err == nil {
+		t.Fatal("expected decode error for broken payload")
+	}
+}
+
+func TestBuildDLQReplayLockKey(t *testing.T) {
+	t.Parallel()
+
+	got := buildDLQReplayLockKey("1740000000000-0")
+	want := "feed:invalidation:dlq:replay:1740000000000-0"
+	if got != want {
+		t.Fatalf("unexpected replay lock key: got=%s want=%s", got, want)
 	}
 }

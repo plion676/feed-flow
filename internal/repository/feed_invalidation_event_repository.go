@@ -25,7 +25,10 @@ const (
 	defaultReclaimBatchPerLoop       = 5
 	defaultRetryMaxAttempts          = 5
 	defaultRetryCounterTTL           = 24 * time.Hour
+	defaultDLQReplayLockTTL          = 7 * 24 * time.Hour
 )
+
+var ErrDLQEventNotFound = errors.New("dlq event not found")
 
 // FeedInvalidationEvent is the payload for async feed cache invalidation jobs.
 type FeedInvalidationEvent struct {
@@ -33,6 +36,23 @@ type FeedInvalidationEvent struct {
 	AuthorID   int64  `json:"author_id"`
 	PostID     int64  `json:"post_id"`
 	OccurredAt int64  `json:"occurred_at"`
+}
+
+type FeedInvalidationDLQRecord struct {
+	MessageID  string                `json:"message_id"`
+	StreamID   string                `json:"stream_id"`
+	Source     string                `json:"source"`
+	RetryCount int64                 `json:"retry_count"`
+	FailedAt   int64                 `json:"failed_at"`
+	LastError  string                `json:"last_error"`
+	Event      FeedInvalidationEvent `json:"event"`
+	Payload    string                `json:"payload"`
+}
+
+type ReplayDLQResult struct {
+	DLQRecord        FeedInvalidationDLQRecord `json:"dlq_record"`
+	ReplayedStreamID string                    `json:"replayed_stream_id"`
+	AlreadyReplayed  bool                      `json:"already_replayed"`
 }
 
 type feedInvalidationDLQEvent struct {
@@ -496,6 +516,121 @@ func stringifyPayload(value any) string {
 		}
 		return string(bytes)
 	}
+}
+
+func (r *FeedInvalidationEventRepository) ListDLQEvents(ctx context.Context, count int64) ([]FeedInvalidationDLQRecord, error) {
+	if count <= 0 {
+		count = 20
+	}
+	entries, err := r.client.XRevRangeN(ctx, r.dlqStreamKey, "+", "-", count).Result()
+	if err != nil {
+		return nil, fmt.Errorf("xrevrange dlq stream=%s count=%d: %w", r.dlqStreamKey, count, err)
+	}
+
+	records := make([]FeedInvalidationDLQRecord, 0, len(entries))
+	for _, entry := range entries {
+		record, err := decodeDLQRecord(entry)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func (r *FeedInvalidationEventRepository) ReplayDLQEvent(
+	ctx context.Context,
+	dlqMessageID string,
+	deleteAfterReplay bool,
+) (*ReplayDLQResult, error) {
+	dlqMessageID = strings.TrimSpace(dlqMessageID)
+	if dlqMessageID == "" {
+		return nil, fmt.Errorf("dlq message id cannot be empty")
+	}
+
+	entries, err := r.client.XRangeN(ctx, r.dlqStreamKey, dlqMessageID, dlqMessageID, 1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("xrange dlq stream=%s message_id=%s: %w", r.dlqStreamKey, dlqMessageID, err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("%w: message_id=%s", ErrDLQEventNotFound, dlqMessageID)
+	}
+
+	record, err := decodeDLQRecord(entries[0])
+	if err != nil {
+		return nil, err
+	}
+
+	replayPayload := strings.TrimSpace(record.Payload)
+	if replayPayload == "" {
+		payloadBytes, marshalErr := json.Marshal(record.Event)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("marshal dlq replay payload message_id=%s: %w", dlqMessageID, marshalErr)
+		}
+		replayPayload = string(payloadBytes)
+	}
+
+	lockKey := buildDLQReplayLockKey(dlqMessageID)
+	locked, err := r.client.SetNX(ctx, lockKey, "1", defaultDLQReplayLockTTL).Result()
+	if err != nil {
+		return nil, fmt.Errorf("setnx replay lock key=%s message_id=%s: %w", lockKey, dlqMessageID, err)
+	}
+	if !locked {
+		return &ReplayDLQResult{
+			DLQRecord:       record,
+			AlreadyReplayed: true,
+		}, nil
+	}
+
+	replayedStreamID, err := r.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: feedInvalidationStreamKey,
+		Values: map[string]any{
+			"payload": replayPayload,
+		},
+	}).Result()
+	if err != nil {
+		// Roll back idempotency lock to allow retry when replay write actually failed.
+		_ = r.client.Del(ctx, lockKey).Err()
+		return nil, fmt.Errorf("xadd replay main stream message_id=%s: %w", dlqMessageID, err)
+	}
+
+	if deleteAfterReplay {
+		if err := r.client.XDel(ctx, r.dlqStreamKey, dlqMessageID).Err(); err != nil {
+			return nil, fmt.Errorf("xdel dlq stream=%s message_id=%s: %w", r.dlqStreamKey, dlqMessageID, err)
+		}
+	}
+
+	return &ReplayDLQResult{
+		DLQRecord:        record,
+		ReplayedStreamID: replayedStreamID,
+	}, nil
+}
+
+func decodeDLQRecord(msg redis.XMessage) (FeedInvalidationDLQRecord, error) {
+	payload := stringifyPayload(msg.Values["payload"])
+	if strings.TrimSpace(payload) == "" {
+		return FeedInvalidationDLQRecord{}, fmt.Errorf("decode dlq event message_id=%s: payload missing", msg.ID)
+	}
+
+	var dlqEvent feedInvalidationDLQEvent
+	if err := json.Unmarshal([]byte(payload), &dlqEvent); err != nil {
+		return FeedInvalidationDLQRecord{}, fmt.Errorf("decode dlq event message_id=%s: %w", msg.ID, err)
+	}
+
+	return FeedInvalidationDLQRecord{
+		MessageID:  msg.ID,
+		StreamID:   dlqEvent.StreamID,
+		Source:     dlqEvent.Source,
+		RetryCount: dlqEvent.RetryCount,
+		FailedAt:   dlqEvent.FailedAt,
+		LastError:  dlqEvent.LastError,
+		Event:      dlqEvent.Event,
+		Payload:    dlqEvent.Payload,
+	}, nil
+}
+
+func buildDLQReplayLockKey(dlqMessageID string) string {
+	return fmt.Sprintf("feed:invalidation:dlq:replay:%s", dlqMessageID)
 }
 
 func (r *FeedInvalidationEventRepository) ensureConsumerGroup(ctx context.Context) error {
