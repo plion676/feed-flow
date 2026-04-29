@@ -39,6 +39,16 @@ type feedMixPick struct {
 	respectsScatter bool
 }
 
+type feedMixPageResult struct {
+	visible             []*model.Post
+	probe               *model.Post
+	hasMore             bool
+	nextInboxCursor     int64
+	nextPullCursor      int64
+	inboxPendingPostIDs []int64
+	pullPendingPostIDs  []int64
+}
+
 func defaultFeedMixPolicy() feedMixPolicy {
 	// TODO(user): tune mix policy by actual business goals
 	// (push quota, pull reserve, and author scatter window).
@@ -51,37 +61,50 @@ func defaultFeedMixPolicy() feedMixPolicy {
 }
 
 func mixFeedPostsForPage(inboxPosts []*model.Post, pullPosts []*model.Post, pageLimit int) []*model.Post {
-	if pageLimit <= 0 {
-		return []*model.Post{}
+	page := defaultFeedMixPolicy().mixPageForCursor(inboxPosts, pullPosts, pageLimit, 0, 0)
+	result := append([]*model.Post{}, page.visible...)
+	if page.probe != nil {
+		result = append(result, page.probe)
 	}
-	return defaultFeedMixPolicy().mixForPage(inboxPosts, pullPosts, pageLimit)
+	return result
 }
 
-func (p feedMixPolicy) mixForPage(inboxPosts []*model.Post, pullPosts []*model.Post, pageLimit int) []*model.Post {
+func mixFeedPageForCursor(
+	inboxPosts []*model.Post,
+	pullPosts []*model.Post,
+	pageLimit int,
+	inboxCursor int64,
+	pullCursor int64,
+) feedMixPageResult {
+	return defaultFeedMixPolicy().mixPageForCursor(inboxPosts, pullPosts, pageLimit, inboxCursor, pullCursor)
+}
+
+func (p feedMixPolicy) mixPageForCursor(
+	inboxPosts []*model.Post,
+	pullPosts []*model.Post,
+	pageLimit int,
+	inboxCursor int64,
+	pullCursor int64,
+) feedMixPageResult {
 	if pageLimit <= 0 {
-		return []*model.Post{}
+		return feedMixPageResult{}
 	}
 
-	resultLimit := pageLimit + 1
 	inboxCandidates := buildFeedMixCandidates(inboxPosts, feedMixSourceInbox)
 	pullCandidates := buildFeedMixCandidates(pullPosts, feedMixSourcePull)
-	if len(inboxCandidates) == 0 {
-		return takeFeedMixPosts(pullCandidates, resultLimit)
-	}
-	if len(pullCandidates) == 0 {
-		return takeFeedMixPosts(inboxCandidates, resultLimit)
-	}
-
 	pushQuota := p.resolvePushQuota(pageLimit, len(pullCandidates))
 	minPullItems := p.resolveMinPullItems(pageLimit, len(pullCandidates))
-	result := make([]*model.Post, 0, resultLimit)
-	seen := make(map[int64]struct{}, resultLimit)
+	nextInboxCursor := resolveSourceContinuationCursor(inboxCursor, inboxCandidates)
+	nextPullCursor := resolveSourceContinuationCursor(pullCursor, pullCandidates)
+
+	visible := make([]*model.Post, 0, pageLimit)
+	seen := make(map[int64]struct{}, pageLimit)
 	pushUsed := 0
 	pullUsed := 0
 	lastAuthorID := int64(0)
 	authorStreak := 0
 
-	for len(result) < pageLimit {
+	for len(visible) < pageLimit {
 		inboxPick := nextFeedMixPick(inboxCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
 		pullPick := nextFeedMixPick(pullCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
 		source, pick, ok := chooseFeedMixPick(
@@ -91,7 +114,7 @@ func (p feedMixPolicy) mixForPage(inboxPosts []*model.Post, pullPosts []*model.P
 			pushQuota,
 			pullUsed,
 			minPullItems,
-			pageLimit-len(result),
+			pageLimit-len(visible),
 			lastAuthorID,
 			authorStreak,
 			p.maxConsecutiveAuthor,
@@ -100,7 +123,7 @@ func (p feedMixPolicy) mixForPage(inboxPosts []*model.Post, pullPosts []*model.P
 			break
 		}
 
-		result = append(result, pick.candidate.post)
+		visible = append(visible, pick.candidate.post)
 		seen[pick.candidate.post.ID] = struct{}{}
 		if pick.candidate.post.UserID == lastAuthorID {
 			authorStreak++
@@ -119,32 +142,17 @@ func (p feedMixPolicy) mixForPage(inboxPosts []*model.Post, pullPosts []*model.P
 		}
 	}
 
-	for len(result) < resultLimit {
-		inboxPick := nextFeedMixPick(inboxCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
-		pullPick := nextFeedMixPick(pullCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
-		source, pick, ok := chooseFeedMixPickByRecency(inboxPick, pullPick, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
-		if !ok {
-			break
-		}
+	probe, hasMore := p.probeNextPost(inboxCandidates, pullCandidates, seen, lastAuthorID, authorStreak)
 
-		result = append(result, pick.candidate.post)
-		seen[pick.candidate.post.ID] = struct{}{}
-		if pick.candidate.post.UserID == lastAuthorID {
-			authorStreak++
-		} else {
-			lastAuthorID = pick.candidate.post.UserID
-			authorStreak = 1
-		}
-
-		switch source {
-		case feedMixSourceInbox:
-			inboxCandidates = removeFeedMixCandidate(inboxCandidates, pick.index)
-		case feedMixSourcePull:
-			pullCandidates = removeFeedMixCandidate(pullCandidates, pick.index)
-		}
+	return feedMixPageResult{
+		visible:             visible,
+		probe:               probe,
+		hasMore:             hasMore,
+		nextInboxCursor:     nextInboxCursor,
+		nextPullCursor:      nextPullCursor,
+		inboxPendingPostIDs: collectFeedMixPendingIDs(inboxCandidates, seen),
+		pullPendingPostIDs:  collectFeedMixPendingIDs(pullCandidates, seen),
 	}
-
-	return result
 }
 
 func buildFeedMixCandidates(posts []*model.Post, source feedMixSource) []feedMixCandidate {
@@ -172,20 +180,6 @@ func buildFeedMixCandidates(posts []*model.Post, source feedMixSource) []feedMix
 		return candidates[i].post.ID > candidates[j].post.ID
 	})
 	return candidates
-}
-
-func takeFeedMixPosts(candidates []feedMixCandidate, limit int) []*model.Post {
-	if limit <= 0 || len(candidates) == 0 {
-		return []*model.Post{}
-	}
-	if len(candidates) > limit {
-		candidates = candidates[:limit]
-	}
-	result := make([]*model.Post, 0, len(candidates))
-	for _, candidate := range candidates {
-		result = append(result, candidate.post)
-	}
-	return result
 }
 
 func nextFeedMixPick(
@@ -231,6 +225,28 @@ func nextFeedMixPick(
 		}
 	}
 	return fallback
+}
+
+func (p feedMixPolicy) probeNextPost(
+	inboxCandidates []feedMixCandidate,
+	pullCandidates []feedMixCandidate,
+	seen map[int64]struct{},
+	lastAuthorID int64,
+	authorStreak int,
+) (*model.Post, bool) {
+	inboxPick := nextFeedMixPick(inboxCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
+	pullPick := nextFeedMixPick(pullCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
+	_, pick, ok := chooseFeedMixPickByRecency(
+		inboxPick,
+		pullPick,
+		lastAuthorID,
+		authorStreak,
+		p.maxConsecutiveAuthor,
+	)
+	if !ok {
+		return nil, false
+	}
+	return pick.candidate.post, true
 }
 
 func chooseFeedMixPick(
@@ -309,6 +325,35 @@ func chooseFeedMixPickByRecency(
 		return feedMixSourceInbox, inboxPick, true
 	}
 	return feedMixSourcePull, pullPick, true
+}
+
+func collectFeedMixPendingIDs(candidates []feedMixCandidate, seen map[int64]struct{}) []int64 {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	pending := make([]int64, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.post == nil || candidate.post.ID <= 0 {
+			continue
+		}
+		if _, ok := seen[candidate.post.ID]; ok {
+			continue
+		}
+		pending = append(pending, candidate.post.ID)
+	}
+	return pending
+}
+
+func resolveSourceContinuationCursor(currentCursor int64, candidates []feedMixCandidate) int64 {
+	if len(candidates) == 0 {
+		return currentCursor
+	}
+	last := candidates[len(candidates)-1]
+	if last.post == nil || last.post.ID <= 0 {
+		return currentCursor
+	}
+	return last.post.ID
 }
 
 func removeFeedMixCandidate(candidates []feedMixCandidate, index int) []feedMixCandidate {

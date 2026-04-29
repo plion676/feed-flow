@@ -229,6 +229,7 @@ func TestFeedGetHomeFeedBadQueryParams(t *testing.T) {
 		"/api/v1/feed?limit=abc",
 		"/api/v1/feed?last_post_id=-1",
 		"/api/v1/feed?last_post_id=abc",
+		"/api/v1/feed?last_post_id=9&cursor=abc",
 	}
 
 	for _, url := range testURLs {

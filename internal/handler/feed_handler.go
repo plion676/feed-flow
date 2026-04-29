@@ -28,8 +28,13 @@ func (h *FeedHandler) GetHomeFeed(c *gin.Context) {
 		return
 	}
 
+	cursor := c.Query("cursor")
 	var lastPostID int64
 	if raw := c.Query("last_post_id"); raw != "" {
+		if cursor != "" {
+			response.Fail(c, http.StatusBadRequest, xerror.ErrBadRequest)
+			return
+		}
 		parsed, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || parsed < 0 {
 			response.Fail(c, http.StatusBadRequest, xerror.ErrBadRequest)
@@ -51,6 +56,7 @@ func (h *FeedHandler) GetHomeFeed(c *gin.Context) {
 	result, bizErr := h.feedService.GetHomeFeed(c.Request.Context(), service.GetFeedRequest{
 		UserID:     userID,
 		LastPostID: lastPostID,
+		Cursor:     cursor,
 		Limit:      limit,
 	})
 	if bizErr != nil {

@@ -363,7 +363,7 @@ func TestFeedServiceGetHomeFeedCache(t *testing.T) {
 	t.Run("cache hit should skip db repositories", func(t *testing.T) {
 		t.Parallel()
 
-		cacheKey := buildFeedCacheKey(1001, 0, 3)
+		cacheKey := buildFeedCacheKey(1001, 0, "", 3)
 		cacheRepo := &fakeFeedCacheRepo{
 			store: map[string]string{
 				cacheKey: `{"items":[{"post_id":10,"user_id":1002,"content":"cached","created_at":"2026-04-22T12:00:00Z"}],"next_cursor":10,"has_more":false}`,
@@ -423,7 +423,7 @@ func TestFeedServiceGetHomeFeedCache(t *testing.T) {
 			t.Fatalf("cache should be set once, got=%d", cacheRepo.setCalled)
 		}
 
-		expectKey := buildFeedCacheKey(1001, 0, 3)
+		expectKey := buildFeedCacheKey(1001, 0, "", 3)
 		cachedPayload, ok := cacheRepo.store[expectKey]
 		if !ok {
 			t.Fatalf("expected cached payload at key=%s", expectKey)
@@ -502,8 +502,8 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 		if got.Items[0].PostID != 11 || got.Items[1].PostID != 10 || got.Items[2].PostID != 9 {
 			t.Fatalf("unexpected inbox order: %+v", got.Items)
 		}
-		if !got.HasMore || got.NextCursor != 9 {
-			t.Fatalf("unexpected inbox paging: has_more=%v next=%d", got.HasMore, got.NextCursor)
+		if !got.HasMore || got.NextCursor != 0 || got.NextCursorToken == "" {
+			t.Fatalf("unexpected inbox paging: has_more=%v next=%d token=%q", got.HasMore, got.NextCursor, got.NextCursorToken)
 		}
 		if postRepo.calledTimes != 1 {
 			t.Fatalf("pull query should still run for merge, pull_calls=%d", postRepo.calledTimes)
@@ -549,8 +549,8 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 				t.Fatalf("unexpected mixed order at %d: got=%d want=%d", i, got.Items[i].PostID, wantID)
 			}
 		}
-		if !got.HasMore || got.NextCursor != 9 {
-			t.Fatalf("unexpected mixed paging: has_more=%v next=%d", got.HasMore, got.NextCursor)
+		if !got.HasMore || got.NextCursor != 0 || got.NextCursorToken == "" {
+			t.Fatalf("unexpected mixed paging: has_more=%v next=%d token=%q", got.HasMore, got.NextCursor, got.NextCursorToken)
 		}
 	})
 
@@ -661,6 +661,92 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 		}
 		if postRepo.calledTimes != 0 {
 			t.Fatalf("pull query should be skipped when follow repo fails and inbox hit succeeds, pull_calls=%d", postRepo.calledTimes)
+		}
+	})
+
+	t.Run("hybrid cursor token should prevent gap when pull reservation reorders page", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002, 1003}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "inbox-12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1002, Content: "inbox-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 9, UserID: 1003, Content: "pull-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+				{ID: 8, UserID: 1001, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{
+			postIDsByUser: map[int64][]int64{
+				1001: {12, 11, 10},
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithInbox(inboxRepo)
+		firstPage, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected first page error: %v", gotErr)
+		}
+		if firstPage == nil || len(firstPage.Items) != 3 {
+			t.Fatalf("unexpected first page result: %+v", firstPage)
+		}
+		wantFirstPage := []int64{12, 11, 9}
+		for i, wantID := range wantFirstPage {
+			if firstPage.Items[i].PostID != wantID {
+				t.Fatalf("unexpected first page item at %d: got=%d want=%d", i, firstPage.Items[i].PostID, wantID)
+			}
+		}
+		if firstPage.NextCursorToken == "" || !firstPage.HasMore {
+			t.Fatalf("expected hybrid token on first page: %+v", firstPage)
+		}
+
+		secondPage, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Cursor: firstPage.NextCursorToken,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected second page error: %v", gotErr)
+		}
+		if secondPage == nil || len(secondPage.Items) != 2 {
+			t.Fatalf("unexpected second page result: %+v", secondPage)
+		}
+		wantSecondPage := []int64{10, 8}
+		for i, wantID := range wantSecondPage {
+			if secondPage.Items[i].PostID != wantID {
+				t.Fatalf("unexpected second page item at %d: got=%d want=%d", i, secondPage.Items[i].PostID, wantID)
+			}
+		}
+		if secondPage.HasMore {
+			t.Fatalf("unexpected has_more on second page: %+v", secondPage)
+		}
+		if secondPage.NextCursorToken != "" {
+			t.Fatalf("expected empty next cursor token on last page, got=%q", secondPage.NextCursorToken)
+		}
+	})
+
+	t.Run("invalid hybrid cursor token should return bad request", func(t *testing.T) {
+		t.Parallel()
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			&fakeFeedPostRepo{},
+		).WithInbox(&fakeFeedInboxRepo{})
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Cursor: "not-a-valid-token",
+			Limit:  3,
+		})
+		if got != nil {
+			t.Fatalf("expected nil result on invalid token, got=%+v", got)
+		}
+		if gotErr != xerror.ErrBadRequest {
+			t.Fatalf("unexpected error on invalid token: got=%v want=%v", gotErr, xerror.ErrBadRequest)
 		}
 	})
 }

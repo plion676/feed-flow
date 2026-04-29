@@ -45,6 +45,7 @@ type FeedService struct {
 type GetFeedRequest struct {
 	UserID     int64
 	LastPostID int64
+	Cursor     string
 	Limit      int
 }
 
@@ -56,9 +57,10 @@ type FeedItem struct {
 }
 
 type FeedResult struct {
-	Items      []FeedItem `json:"items"`
-	NextCursor int64      `json:"next_cursor"`
-	HasMore    bool       `json:"has_more"`
+	Items           []FeedItem `json:"items"`
+	NextCursor      int64      `json:"next_cursor"`
+	NextCursorToken string     `json:"next_cursor_token,omitempty"`
+	HasMore         bool       `json:"has_more"`
 }
 
 func NewFeedService(followRepo feedFollowRepository, postRepo feedPostRepository) *FeedService {
@@ -93,22 +95,46 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		limit = maxFeedLimit
 	}
 
-	cacheKey := buildFeedCacheKey(req.UserID, req.LastPostID, limit)
+	readCursor, err := resolveFeedReadCursor(req)
+	if err != nil {
+		return nil, xerror.ErrBadRequest
+	}
+
+	cacheKey := buildFeedCacheKey(req.UserID, req.LastPostID, req.Cursor, limit)
 	if cached, ok := s.getFeedFromCache(ctx, cacheKey); ok {
 		return cached, nil
 	}
 
-	pullPosts, err := s.getHomeFeedByPullPosts(ctx, req.UserID, req.LastPostID, limit+1)
+	pullPosts, err := s.getHomeFeedByPullPostsWithPending(
+		ctx,
+		req.UserID,
+		readCursor.PullLastPostID,
+		limit+1,
+		readCursor.PullPendingIDs,
+	)
 	var inboxPosts []*model.Post
 	inboxHit := false
-	if maybeInboxPosts, ok := s.getHomeFeedFromInboxPosts(ctx, req.UserID, req.LastPostID, limit+1); ok {
+	if maybeInboxPosts, ok := s.getHomeFeedFromInboxPostsWithPending(
+		ctx,
+		req.UserID,
+		readCursor.InboxLastPostID,
+		limit+1,
+		readCursor.InboxPendingIDs,
+	); ok {
 		inboxPosts = maybeInboxPosts
 		inboxHit = true
 	}
+	useHybridCursor := req.Cursor != "" || inboxHit
 
 	if err != nil {
 		if !inboxHit {
 			return nil, xerror.ErrInternal
+		}
+		if useHybridCursor {
+			page := mixFeedPageForCursor(inboxPosts, nil, limit, readCursor.InboxLastPostID, readCursor.PullLastPostID)
+			result := buildFeedResultWithHybridCursor(page)
+			s.setFeedCache(ctx, cacheKey, result)
+			return result, nil
 		}
 		result := buildFeedResult(inboxPosts, limit, len(inboxPosts) > limit)
 		s.setFeedCache(ctx, cacheKey, result)
@@ -116,7 +142,10 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 	}
 
 	var result *FeedResult
-	if inboxHit {
+	if useHybridCursor {
+		page := mixFeedPageForCursor(inboxPosts, pullPosts, limit, readCursor.InboxLastPostID, readCursor.PullLastPostID)
+		result = buildFeedResultWithHybridCursor(page)
+	} else if inboxHit {
 		mixedPosts := mixFeedPostsForPage(inboxPosts, pullPosts, limit)
 		result = buildFeedResult(mixedPosts, limit, len(mixedPosts) > limit)
 	} else {
@@ -127,8 +156,22 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 	return result, nil
 }
 
-func buildFeedCacheKey(userID int64, lastPostID int64, limit int) string {
+func buildFeedCacheKey(userID int64, lastPostID int64, cursor string, limit int) string {
+	if cursor != "" {
+		return fmt.Sprintf("feed:home:%d:%s:%d", userID, cursor, limit)
+	}
 	return fmt.Sprintf("feed:home:%d:%d:%d", userID, lastPostID, limit)
+}
+
+func resolveFeedReadCursor(req GetFeedRequest) (feedReadCursor, error) {
+	if req.Cursor == "" {
+		return feedReadCursor{
+			InboxLastPostID: req.LastPostID,
+			PullLastPostID:  req.LastPostID,
+		}, nil
+	}
+
+	return decodeFeedCursorToken(req.Cursor)
 }
 
 func (s *FeedService) getFeedFromCache(ctx context.Context, cacheKey string) (*FeedResult, bool) {
@@ -222,6 +265,29 @@ func (s *FeedService) getHomeFeedFromInboxPosts(
 	return collected, true
 }
 
+func (s *FeedService) getHomeFeedFromInboxPostsWithPending(
+	ctx context.Context,
+	userID int64,
+	lastPostID int64,
+	limit int,
+	pendingPostIDs []int64,
+) ([]*model.Post, bool) {
+	pendingPosts, ok := s.getPostsByPendingIDs(ctx, pendingPostIDs)
+	if !ok {
+		return nil, false
+	}
+
+	freshPosts, inboxHit := s.getHomeFeedFromInboxPosts(ctx, userID, lastPostID, limit)
+	if !inboxHit {
+		if len(pendingPosts) == 0 {
+			return nil, false
+		}
+		return pendingPosts, true
+	}
+
+	return append(pendingPosts, freshPosts...), true
+}
+
 func (s *FeedService) getHomeFeedByPullPosts(
 	ctx context.Context,
 	userID int64,
@@ -241,6 +307,38 @@ func (s *FeedService) getHomeFeedByPullPosts(
 	}
 
 	return posts, nil
+}
+
+func (s *FeedService) getHomeFeedByPullPostsWithPending(
+	ctx context.Context,
+	userID int64,
+	lastPostID int64,
+	limit int,
+	pendingPostIDs []int64,
+) ([]*model.Post, error) {
+	pendingPosts, ok := s.getPostsByPendingIDs(ctx, pendingPostIDs)
+	if !ok {
+		return nil, fmt.Errorf("list pending pull posts failed")
+	}
+
+	posts, err := s.getHomeFeedByPullPosts(ctx, userID, lastPostID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(pendingPosts, posts...), nil
+}
+
+func (s *FeedService) getPostsByPendingIDs(ctx context.Context, postIDs []int64) ([]*model.Post, bool) {
+	if len(postIDs) == 0 {
+		return nil, true
+	}
+
+	posts, err := s.postRepo.ListByIDs(ctx, postIDs)
+	if err != nil {
+		return nil, false
+	}
+	return posts, true
 }
 
 func minPostID(postIDs []int64) (int64, bool) {
@@ -284,4 +382,40 @@ func buildFeedResult(posts []*model.Post, limit int, hasMore bool) *FeedResult {
 		NextCursor: nextCursor,
 		HasMore:    hasMore,
 	}
+}
+
+func buildFeedResultWithHybridCursor(page feedMixPageResult) *FeedResult {
+	items := make([]FeedItem, 0, len(page.visible))
+	for _, post := range page.visible {
+		if post == nil {
+			continue
+		}
+		items = append(items, FeedItem{
+			PostID:    post.ID,
+			UserID:    post.UserID,
+			Content:   post.Content,
+			CreatedAt: post.CreatedAt,
+		})
+	}
+
+	result := &FeedResult{
+		Items:   items,
+		HasMore: page.hasMore,
+	}
+	if !page.hasMore {
+		return result
+	}
+
+	token, err := encodeFeedCursorToken(feedReadCursor{
+		InboxLastPostID: page.nextInboxCursor,
+		PullLastPostID:  page.nextPullCursor,
+		InboxPendingIDs: page.inboxPendingPostIDs,
+		PullPendingIDs:  page.pullPendingPostIDs,
+	})
+	if err != nil {
+		// Fall back to no continuation token instead of failing the feed read path.
+		return result
+	}
+	result.NextCursorToken = token
+	return result
 }
