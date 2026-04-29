@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/plion676/feed-flow/internal/model"
@@ -118,8 +117,8 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 
 	var result *FeedResult
 	if inboxHit {
-		mergedPosts := mergeFeedPosts(inboxPosts, pullPosts)
-		result = buildFeedResult(mergedPosts, limit, len(mergedPosts) > limit)
+		mixedPosts := mixFeedPostsForPage(inboxPosts, pullPosts, limit)
+		result = buildFeedResult(mixedPosts, limit, len(mixedPosts) > limit)
 	} else {
 		result = buildFeedResult(pullPosts, limit, len(pullPosts) > limit)
 	}
@@ -242,32 +241,6 @@ func (s *FeedService) getHomeFeedByPullPosts(
 	}
 
 	return posts, nil
-}
-
-func mergeFeedPosts(sources ...[]*model.Post) []*model.Post {
-	if len(sources) == 0 {
-		return []*model.Post{}
-	}
-
-	mergedByID := make(map[int64]*model.Post)
-	for _, posts := range sources {
-		for _, post := range posts {
-			if post == nil || post.ID <= 0 {
-				continue
-			}
-			mergedByID[post.ID] = post
-		}
-	}
-
-	merged := make([]*model.Post, 0, len(mergedByID))
-	for _, post := range mergedByID {
-		merged = append(merged, post)
-	}
-
-	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].ID > merged[j].ID
-	})
-	return merged
 }
 
 func minPostID(postIDs []int64) (int64, bool) {

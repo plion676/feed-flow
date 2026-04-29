@@ -513,6 +513,47 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 		}
 	})
 
+	t.Run("mix strategy should reserve pull slot when inbox can fill whole page", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002, 1003}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "inbox-12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1002, Content: "inbox-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 9, UserID: 1003, Content: "pull-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+				{ID: 8, UserID: 1001, Content: "self-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{
+			postIDsByUser: map[int64][]int64{
+				1001: {12, 11, 10},
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithInbox(inboxRepo)
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("unexpected mixed result: %+v", got)
+		}
+		wantOrder := []int64{12, 11, 9}
+		for i, wantID := range wantOrder {
+			if got.Items[i].PostID != wantID {
+				t.Fatalf("unexpected mixed order at %d: got=%d want=%d", i, got.Items[i].PostID, wantID)
+			}
+		}
+		if !got.HasMore || got.NextCursor != 9 {
+			t.Fatalf("unexpected mixed paging: has_more=%v next=%d", got.HasMore, got.NextCursor)
+		}
+	})
+
 	t.Run("inbox miss should fallback pull", func(t *testing.T) {
 		t.Parallel()
 
@@ -624,28 +665,84 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 	})
 }
 
-func TestMergeFeedPosts(t *testing.T) {
+func TestMixFeedPostsForPage(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 4, 24, 13, 0, 0, 0, time.UTC)
-	inboxPosts := []*model.Post{
-		{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now},
-		{ID: 8, UserID: 1002, Content: "inbox-8", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
-	}
-	pullPosts := []*model.Post{
-		{ID: 11, UserID: 1003, Content: "pull-11", Status: 1, CreatedAt: now.Add(time.Minute)},
-		{ID: 10, UserID: 1002, Content: "pull-10", Status: 1, CreatedAt: now},
-		{ID: 9, UserID: 1001, Content: "pull-9", Status: 1, CreatedAt: now.Add(-time.Minute)},
-	}
 
-	merged := mergeFeedPosts(inboxPosts, pullPosts)
-	if len(merged) != 4 {
-		t.Fatalf("unexpected merged count: got=%d want=4", len(merged))
-	}
-	wantOrder := []int64{11, 10, 9, 8}
-	for i, wantID := range wantOrder {
-		if merged[i].ID != wantID {
-			t.Fatalf("unexpected merged order at %d: got=%d want=%d", i, merged[i].ID, wantID)
+	t.Run("should dedupe same post across inbox and pull", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now},
+			{ID: 8, UserID: 1002, Content: "inbox-8", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
 		}
-	}
+		pullPosts := []*model.Post{
+			{ID: 11, UserID: 1003, Content: "pull-11", Status: 1, CreatedAt: now.Add(time.Minute)},
+			{ID: 10, UserID: 1002, Content: "pull-10", Status: 1, CreatedAt: now},
+			{ID: 9, UserID: 1001, Content: "pull-9", Status: 1, CreatedAt: now.Add(-time.Minute)},
+		}
+
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 3)
+		wantOrder := []int64{11, 10, 9, 8}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected mixed count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected mixed order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
+
+	t.Run("should reserve pull items instead of returning all inbox", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 12, UserID: 1002, Content: "inbox-12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 1002, Content: "inbox-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+		}
+		pullPosts := []*model.Post{
+			{ID: 9, UserID: 1003, Content: "pull-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+			{ID: 8, UserID: 1001, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+		}
+
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 3)
+		wantOrder := []int64{12, 11, 9, 10}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected reserved count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected reserved order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
+
+	t.Run("should scatter same author when alternative author exists", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 12, UserID: 1002, Content: "inbox-12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 1002, Content: "inbox-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			{ID: 10, UserID: 1002, Content: "inbox-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+		}
+		pullPosts := []*model.Post{
+			{ID: 13, UserID: 1002, Content: "pull-13", Status: 1, CreatedAt: now.Add(time.Minute)},
+			{ID: 9, UserID: 1003, Content: "pull-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+			{ID: 8, UserID: 1004, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+		}
+
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 4)
+		wantOrder := []int64{13, 12, 9, 11, 10}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected scatter count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected scatter order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
 }
