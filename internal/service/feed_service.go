@@ -36,10 +36,13 @@ type feedCacheRepository interface {
 
 // FeedService handles timeline read workflows.
 type FeedService struct {
-	followRepo feedFollowRepository
-	postRepo   feedPostRepository
-	cacheRepo  feedCacheRepository
-	inboxRepo  feedInboxRepository
+	followRepo              feedFollowRepository
+	postRepo                feedPostRepository
+	cacheRepo               feedCacheRepository
+	inboxRepo               feedInboxRepository
+	exposureRepo            feedExposureRepository
+	exposureWindowTTL       time.Duration
+	exposureBatchMultiplier int
 }
 
 type GetFeedRequest struct {
@@ -82,6 +85,14 @@ func (s *FeedService) WithInbox(inboxRepo feedInboxRepository) *FeedService {
 	return s
 }
 
+// WithExposure wires an optional exposure-window backend for feed reads.
+func (s *FeedService) WithExposure(exposureRepo feedExposureRepository, options FeedExposureOptions) *FeedService {
+	s.exposureRepo = exposureRepo
+	s.exposureWindowTTL = options.WindowTTL
+	s.exposureBatchMultiplier = options.BatchMultiplier
+	return s
+}
+
 func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*FeedResult, *xerror.Error) {
 	if req.UserID <= 0 {
 		return nil, xerror.ErrUnauthorized
@@ -105,24 +116,67 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		return cached, nil
 	}
 
-	pullPosts, err := s.getHomeFeedByPullPostsWithPending(
-		ctx,
-		req.UserID,
-		readCursor.PullLastPostID,
-		limit+1,
-		readCursor.PullPendingIDs,
+	var (
+		pullCandidates  feedExposureCandidates
+		inboxCandidates feedExposureCandidates
+		inboxPosts      []*model.Post
+		inboxHit        bool
 	)
-	var inboxPosts []*model.Post
-	inboxHit := false
-	if maybeInboxPosts, ok := s.getHomeFeedFromInboxPostsWithPending(
-		ctx,
-		req.UserID,
-		readCursor.InboxLastPostID,
-		limit+1,
-		readCursor.InboxPendingIDs,
-	); ok {
-		inboxPosts = maybeInboxPosts
-		inboxHit = true
+
+	if s.exposureRepo != nil {
+		batchLimit := resolveFeedExposureBatchLimit(limit, s.exposureBatchMultiplier)
+		pullCandidates, err = s.collectPullExposureCandidates(
+			ctx,
+			req.UserID,
+			readCursor.PullLastPostID,
+			limit+1,
+			batchLimit,
+			readCursor.PullPendingIDs,
+		)
+		inboxCandidates, inboxErr := s.collectInboxExposureCandidates(
+			ctx,
+			req.UserID,
+			readCursor.InboxLastPostID,
+			limit+1,
+			batchLimit,
+			readCursor.InboxPendingIDs,
+		)
+		if inboxErr != nil {
+			inboxCandidates = feedExposureCandidates{}
+		}
+		inboxPosts = inboxCandidates.posts
+		inboxHit = inboxCandidates.hit
+	} else {
+		pullPosts, pullErr := s.getHomeFeedByPullPostsWithPending(
+			ctx,
+			req.UserID,
+			readCursor.PullLastPostID,
+			limit+1,
+			readCursor.PullPendingIDs,
+		)
+		err = pullErr
+		pullCandidates = feedExposureCandidates{
+			posts:      pullPosts,
+			nextCursor: readCursor.PullLastPostID,
+			hasMore:    len(pullPosts) > limit,
+			hit:        len(pullPosts) > 0,
+		}
+		if maybeInboxPosts, ok := s.getHomeFeedFromInboxPostsWithPending(
+			ctx,
+			req.UserID,
+			readCursor.InboxLastPostID,
+			limit+1,
+			readCursor.InboxPendingIDs,
+		); ok {
+			inboxPosts = maybeInboxPosts
+			inboxHit = true
+			inboxCandidates = feedExposureCandidates{
+				posts:      maybeInboxPosts,
+				nextCursor: readCursor.InboxLastPostID,
+				hasMore:    len(maybeInboxPosts) > limit,
+				hit:        true,
+			}
+		}
 	}
 	useHybridCursor := req.Cursor != "" || inboxHit
 
@@ -143,16 +197,39 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 
 	var result *FeedResult
 	if useHybridCursor {
-		page := mixFeedPageForCursor(inboxPosts, pullPosts, limit, readCursor.InboxLastPostID, readCursor.PullLastPostID)
+		inboxCursor := readCursor.InboxLastPostID
+		pullCursor := readCursor.PullLastPostID
+		if s.exposureRepo != nil {
+			inboxCursor = inboxCandidates.nextCursor
+			pullCursor = pullCandidates.nextCursor
+		}
+		page := mixFeedPageForCursor(
+			inboxPosts,
+			pullCandidates.posts,
+			limit,
+			inboxCursor,
+			pullCursor,
+		)
+		if s.exposureRepo != nil {
+			if !inboxCandidates.hasMore {
+				page.nextInboxCursor = inboxCandidates.nextCursor
+				page.inboxPendingPostIDs = nil
+			}
+			if !pullCandidates.hasMore {
+				page.nextPullCursor = pullCandidates.nextCursor
+				page.pullPendingPostIDs = nil
+			}
+		}
 		result = buildFeedResultWithHybridCursor(page)
 	} else if inboxHit {
-		mixedPosts := mixFeedPostsForPage(inboxPosts, pullPosts, limit)
+		mixedPosts := mixFeedPostsForPage(inboxPosts, pullCandidates.posts, limit)
 		result = buildFeedResult(mixedPosts, limit, len(mixedPosts) > limit)
 	} else {
-		result = buildFeedResult(pullPosts, limit, len(pullPosts) > limit)
+		result = buildFeedResult(pullCandidates.posts, limit, pullCandidates.hasMore || len(pullCandidates.posts) > limit)
 	}
 
 	s.setFeedCache(ctx, cacheKey, result)
+	s.markFeedResultExposure(ctx, req.UserID, result)
 	return result, nil
 }
 

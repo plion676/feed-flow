@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -53,6 +54,7 @@ func New(cfg *Config) *App {
 	var feedCacheInvalidator *repository.FeedCacheInvalidatorRepository
 	var feedInvalidationEventPub *repository.FeedInvalidationEventRepository
 	var feedInboxRepo *repository.FeedInboxRepository
+	var feedExposureRepo *repository.FeedExposureRepository
 	redisClient, err := NewRedisClient(cfg)
 	if err != nil {
 		log.Printf("connect redis failed, fallback to db-only feed: %v", err)
@@ -61,6 +63,11 @@ func New(cfg *Config) *App {
 		feedCacheInvalidator = repository.NewFeedCacheInvalidatorRepository(redisClient)
 		feedInvalidationEventPub = repository.NewFeedInvalidationEventRepository(redisClient)
 		feedInboxRepo = repository.NewFeedInboxRepository(redisClient)
+		if cfg.Feed.Exposure.Enabled {
+			feedExposureRepo = repository.NewFeedExposureRepository(redisClient, repository.FeedExposureRepositoryOptions{
+				KeyTTL: time.Duration(cfg.Feed.Exposure.KeyTTLHours) * time.Hour,
+			})
+		}
 	}
 
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
@@ -73,6 +80,12 @@ func New(cfg *Config) *App {
 	}
 	if feedInboxRepo != nil && cfg.Feed.Inbox.Enabled {
 		feedService = feedService.WithInbox(feedInboxRepo)
+	}
+	if feedExposureRepo != nil {
+		feedService = feedService.WithExposure(feedExposureRepo, service.FeedExposureOptions{
+			WindowTTL:       time.Duration(cfg.Feed.Exposure.WindowHours) * time.Hour,
+			BatchMultiplier: cfg.Feed.Exposure.BatchMultiplier,
+		})
 	}
 	if feedCacheInvalidator != nil {
 		postService = postService.WithFeedCacheInvalidator(feedCacheInvalidator)

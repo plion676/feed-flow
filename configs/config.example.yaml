@@ -23,6 +23,11 @@ feed:
   inbox:
     enabled: true
     max_items: 1000
+  exposure:
+    enabled: true
+    window_hours: 24
+    key_ttl_hours: 48
+    batch_multiplier: 3
   worker:
     reclaim_min_idle_seconds: 30
     idle_log_interval_seconds: 30

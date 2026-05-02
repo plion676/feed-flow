@@ -169,6 +169,64 @@ func (r *fakeFeedCacheRepo) Set(_ context.Context, key string, value string, _ t
 	return nil
 }
 
+type fakeFeedExposureRepo struct {
+	seenPostIDs map[int64]map[int64]struct{}
+	filterErr   error
+	markErr     error
+
+	filterCalled int
+	markCalled   int
+	gotUserID    int64
+	gotMarkedIDs []int64
+	gotWindow    time.Duration
+}
+
+func (r *fakeFeedExposureRepo) FilterUnseenPostIDs(_ context.Context, userID int64, postIDs []int64, window time.Duration) ([]int64, error) {
+	r.filterCalled++
+	r.gotUserID = userID
+	r.gotWindow = window
+	if r.filterErr != nil {
+		return nil, r.filterErr
+	}
+
+	userSeen := r.seenPostIDs[userID]
+	filtered := make([]int64, 0, len(postIDs))
+	for _, postID := range postIDs {
+		if postID <= 0 {
+			continue
+		}
+		if _, ok := userSeen[postID]; ok {
+			continue
+		}
+		filtered = append(filtered, postID)
+	}
+	return filtered, nil
+}
+
+func (r *fakeFeedExposureRepo) MarkSeenPostIDs(_ context.Context, userID int64, postIDs []int64, window time.Duration) error {
+	r.markCalled++
+	r.gotUserID = userID
+	r.gotMarkedIDs = append([]int64(nil), postIDs...)
+	r.gotWindow = window
+	if r.markErr != nil {
+		return r.markErr
+	}
+
+	if r.seenPostIDs == nil {
+		r.seenPostIDs = make(map[int64]map[int64]struct{})
+	}
+	if r.seenPostIDs[userID] == nil {
+		r.seenPostIDs[userID] = make(map[int64]struct{})
+	}
+	for _, postID := range postIDs {
+		if postID <= 0 {
+			continue
+		}
+		r.seenPostIDs[userID][postID] = struct{}{}
+	}
+	return nil
+}
+
 func containsInt64(nums []int64, target int64) bool {
 	for _, n := range nums {
 		if n == target {
@@ -749,6 +807,185 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 			t.Fatalf("unexpected error on invalid token: got=%v want=%v", gotErr, xerror.ErrBadRequest)
 		}
 	})
+}
+
+func TestFeedServiceGetHomeFeedExposure(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 5, 2, 10, 0, 0, 0, time.UTC)
+
+	t.Run("should filter seen posts and backfill more pull posts", func(t *testing.T) {
+		t.Parallel()
+
+		exposureRepo := &fakeFeedExposureRepo{
+			seenPostIDs: map[int64]map[int64]struct{}{
+				1001: {
+					12: {},
+					11: {},
+				},
+			},
+		}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "p12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1001, Content: "p11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1002, Content: "p10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 9, UserID: 1001, Content: "p9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+				{ID: 8, UserID: 1002, Content: "p8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithExposure(exposureRepo, FeedExposureOptions{})
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("unexpected result: %+v", got)
+		}
+
+		wantIDs := []int64{10, 9, 8}
+		for i, wantID := range wantIDs {
+			if got.Items[i].PostID != wantID {
+				t.Fatalf("unexpected item at %d: got=%d want=%d", i, got.Items[i].PostID, wantID)
+			}
+		}
+		if exposureRepo.filterCalled == 0 {
+			t.Fatal("expected exposure filter to be called")
+		}
+		if postRepo.calledTimes < 1 {
+			t.Fatalf("expected pull repository to be called, got=%d", postRepo.calledTimes)
+		}
+		if exposureRepo.markCalled != 1 {
+			t.Fatalf("expected exposure mark called once, got=%d", exposureRepo.markCalled)
+		}
+	})
+
+	t.Run("should mark returned posts as seen", func(t *testing.T) {
+		t.Parallel()
+
+		exposureRepo := &fakeFeedExposureRepo{}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 7, UserID: 1001, Content: "p7", Status: 1, CreatedAt: now},
+				{ID: 6, UserID: 1002, Content: "p6", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithExposure(exposureRepo, FeedExposureOptions{
+			WindowTTL: 36 * time.Hour,
+		})
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  2,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 2 {
+			t.Fatalf("unexpected result: %+v", got)
+		}
+		if exposureRepo.markCalled != 1 {
+			t.Fatalf("expected exposure mark once, got=%d", exposureRepo.markCalled)
+		}
+		if exposureRepo.gotWindow != 36*time.Hour {
+			t.Fatalf("unexpected exposure window: got=%s want=%s", exposureRepo.gotWindow, 36*time.Hour)
+		}
+		if len(exposureRepo.gotMarkedIDs) != 2 || exposureRepo.gotMarkedIDs[0] != 7 || exposureRepo.gotMarkedIDs[1] != 6 {
+			t.Fatalf("unexpected marked ids: got=%v", exposureRepo.gotMarkedIDs)
+		}
+	})
+
+	t.Run("exposure repository failure should degrade to normal feed result", func(t *testing.T) {
+		t.Parallel()
+
+		exposureRepo := &fakeFeedExposureRepo{filterErr: errors.New("redis timeout")}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 5, UserID: 1001, Content: "p5", Status: 1, CreatedAt: now},
+				{ID: 4, UserID: 1002, Content: "p4", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithExposure(exposureRepo, FeedExposureOptions{})
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  2,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 2 {
+			t.Fatalf("unexpected degraded result: %+v", got)
+		}
+		if got.Items[0].PostID != 5 || got.Items[1].PostID != 4 {
+			t.Fatalf("unexpected degraded items: %+v", got.Items)
+		}
+	})
+}
+
+func TestResolveFeedExposureBatchLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		limit           int
+		batchMultiplier int
+		want            int
+	}{
+		{
+			name:            "default multiplier when unset",
+			limit:           3,
+			batchMultiplier: 0,
+			want:            9,
+		},
+		{
+			name:            "configured multiplier applies",
+			limit:           4,
+			batchMultiplier: 5,
+			want:            20,
+		},
+		{
+			name:            "must still overfetch at least limit plus one",
+			limit:           5,
+			batchMultiplier: 1,
+			want:            6,
+		},
+		{
+			name:            "cap at max batch limit",
+			limit:           100,
+			batchMultiplier: 5,
+			want:            maxFeedExposureBatchLimit,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := resolveFeedExposureBatchLimit(tc.limit, tc.batchMultiplier)
+			if got != tc.want {
+				t.Fatalf("unexpected batch limit: got=%d want=%d", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestMixFeedPostsForPage(t *testing.T) {

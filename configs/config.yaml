@@ -25,6 +25,14 @@ feed:
   inbox:
     enabled: true
     max_items: 1000
+  exposure:
+    enabled: true
+    # Posts exposed within this window are filtered on subsequent feed reads.
+    window_hours: 24
+    # Cleanup TTL for inactive users' exposure history.
+    key_ttl_hours: 48
+    # Over-fetch multiplier for exposure backfill.
+    batch_multiplier: 3
   worker:
     # XAUTOCLAIM min idle seconds before reclaiming pending from other consumers.
     reclaim_min_idle_seconds: 30

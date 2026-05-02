@@ -40,9 +40,10 @@ type JWTConfig struct {
 }
 
 type FeedConfig struct {
-	Hybrid FeedHybridConfig `yaml:"hybrid"`
-	Inbox  FeedInboxConfig  `yaml:"inbox"`
-	Worker FeedWorkerConfig `yaml:"worker"`
+	Hybrid   FeedHybridConfig   `yaml:"hybrid"`
+	Inbox    FeedInboxConfig    `yaml:"inbox"`
+	Exposure FeedExposureConfig `yaml:"exposure"`
+	Worker   FeedWorkerConfig   `yaml:"worker"`
 }
 
 type FeedHybridConfig struct {
@@ -55,6 +56,16 @@ type FeedHybridConfig struct {
 type FeedInboxConfig struct {
 	Enabled  bool  `yaml:"enabled"`
 	MaxItems int64 `yaml:"max_items"`
+}
+
+type FeedExposureConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// WindowHours controls how long a returned post stays in the exposure window.
+	WindowHours int `yaml:"window_hours"`
+	// KeyTTLHours controls Redis key cleanup for inactive users.
+	KeyTTLHours int `yaml:"key_ttl_hours"`
+	// BatchMultiplier controls how many candidates to over-fetch for exposure backfill.
+	BatchMultiplier int `yaml:"batch_multiplier"`
 }
 
 type FeedWorkerConfig struct {
