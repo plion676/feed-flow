@@ -43,6 +43,7 @@ type FeedService struct {
 	exposureRepo            feedExposureRepository
 	exposureWindowTTL       time.Duration
 	exposureBatchMultiplier int
+	mixPolicy               feedMixPolicy
 }
 
 type GetFeedRequest struct {
@@ -70,6 +71,7 @@ func NewFeedService(followRepo feedFollowRepository, postRepo feedPostRepository
 	return &FeedService{
 		followRepo: followRepo,
 		postRepo:   postRepo,
+		mixPolicy:  defaultFeedMixPolicy(),
 	}
 }
 
@@ -90,6 +92,11 @@ func (s *FeedService) WithExposure(exposureRepo feedExposureRepository, options 
 	s.exposureRepo = exposureRepo
 	s.exposureWindowTTL = options.WindowTTL
 	s.exposureBatchMultiplier = options.BatchMultiplier
+	return s
+}
+
+func (s *FeedService) WithMixPolicy(options FeedMixOptions) *FeedService {
+	s.mixPolicy = newFeedMixPolicy(options)
 	return s
 }
 
@@ -185,7 +192,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 			return nil, xerror.ErrInternal
 		}
 		if useHybridCursor {
-			page := mixFeedPageForCursor(inboxPosts, nil, limit, readCursor.InboxLastPostID, readCursor.PullLastPostID)
+			page := mixFeedPageForCursor(inboxPosts, nil, limit, readCursor.InboxLastPostID, readCursor.PullLastPostID, s.mixPolicy)
 			result := buildFeedResultWithHybridCursor(page)
 			s.setFeedCache(ctx, cacheKey, result)
 			return result, nil
@@ -209,6 +216,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 			limit,
 			inboxCursor,
 			pullCursor,
+			s.mixPolicy,
 		)
 		if s.exposureRepo != nil {
 			if !inboxCandidates.hasMore {
@@ -222,7 +230,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		}
 		result = buildFeedResultWithHybridCursor(page)
 	} else if inboxHit {
-		mixedPosts := mixFeedPostsForPage(inboxPosts, pullCandidates.posts, limit)
+		mixedPosts := mixFeedPostsForPage(inboxPosts, pullCandidates.posts, limit, s.mixPolicy)
 		result = buildFeedResult(mixedPosts, limit, len(mixedPosts) > limit)
 	} else {
 		result = buildFeedResult(pullCandidates.posts, limit, pullCandidates.hasMore || len(pullCandidates.posts) > limit)

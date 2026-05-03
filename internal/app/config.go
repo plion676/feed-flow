@@ -50,12 +50,24 @@ type FeedHybridConfig struct {
 	// PushFollowerThreshold controls push/pull split:
 	// follower_count <= threshold => push_and_pull; otherwise => pull_only.
 	// 0 means pull_only for all authors.
-	PushFollowerThreshold int `yaml:"push_follower_threshold"`
+	PushFollowerThreshold int           `yaml:"push_follower_threshold"`
+	Mix                   FeedMixConfig `yaml:"mix"`
 }
 
 type FeedInboxConfig struct {
-	Enabled  bool  `yaml:"enabled"`
-	MaxItems int64 `yaml:"max_items"`
+	Enabled   bool  `yaml:"enabled"`
+	MaxItems  int64 `yaml:"max_items"`
+	BatchSize int   `yaml:"batch_size"`
+	Workers   int   `yaml:"workers"`
+}
+
+type FeedMixConfig struct {
+	PushRatioNumerator   int  `yaml:"push_ratio_numerator"`
+	PushRatioDenominator int  `yaml:"push_ratio_denominator"`
+	MinPullItems         *int `yaml:"min_pull_items"`
+	MaxConsecutiveAuthor int  `yaml:"max_consecutive_author"`
+	AuthorCooldownWindow int  `yaml:"author_cooldown_window"`
+	MaxConsecutiveSource *int `yaml:"max_consecutive_source"`
 }
 
 type FeedExposureConfig struct {

@@ -19,12 +19,26 @@ jwt:
 
 feed:
   hybrid:
-    # <= threshold => push_and_pull; > threshold => pull_only.
+    # <= threshold ==> push_and_pull; > threshold => pull_only.
     # keep 0 to fully fallback to pull v1.
     push_follower_threshold: 100
+    mix:
+      # push candidate quota per page, represented as numerator/denominator.
+      push_ratio_numerator: 2
+      push_ratio_denominator: 3
+      # reserve at least N pull items when pull candidates exist.
+      min_pull_items: 1
+      # avoid more than N consecutive posts from the same author when alternatives exist.
+      max_consecutive_author: 2
+      # avoid recently shown authors in the latest K visible picks when alternatives exist.
+      author_cooldown_window: 2
+      # avoid more than N consecutive picks from the same source (inbox/pull) when both exist.
+      max_consecutive_source: 2
   inbox:
     enabled: true
     max_items: 1000
+    batch_size: 200
+    workers: 8
   exposure:
     enabled: true
     # Posts exposed within this window are filtered on subsequent feed reads.

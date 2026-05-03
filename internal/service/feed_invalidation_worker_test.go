@@ -42,14 +42,16 @@ type fakeWorkerInboxFanout struct {
 	gotFollowerIDs []int64
 	gotPostID      int64
 	gotOccurredAt  int64
+	gotStreamID    string
 	err            error
 }
 
-func (f *fakeWorkerInboxFanout) FanoutPostToFollowers(_ context.Context, followerIDs []int64, postID int64, occurredAt int64) error {
+func (f *fakeWorkerInboxFanout) FanoutPostToFollowers(ctx context.Context, followerIDs []int64, postID int64, occurredAt int64) error {
 	f.called++
 	f.gotFollowerIDs = append([]int64{}, followerIDs...)
 	f.gotPostID = postID
 	f.gotOccurredAt = occurredAt
+	f.gotStreamID = getFeedEventLogFields(ctx).StreamID
 	return f.err
 }
 
@@ -209,6 +211,7 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 			WithInboxFanout(fanout)
 
 		err := worker.HandlePostCreatedEvent(ctx, PostCreatedEvent{
+			StreamID:     "1740000000000-0",
 			AuthorUserID: 1001,
 			PostID:       3001,
 			OccurredAt:   1713950400,
@@ -221,6 +224,9 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		}
 		if fanout.gotPostID != 3001 {
 			t.Fatalf("unexpected fanout post id: got=%d", fanout.gotPostID)
+		}
+		if fanout.gotStreamID != "1740000000000-0" {
+			t.Fatalf("unexpected fanout stream id: got=%q", fanout.gotStreamID)
 		}
 		if len(fanout.gotFollowerIDs) != len(followerIDs) {
 			t.Fatalf("unexpected fanout follower count: got=%d want=%d", len(fanout.gotFollowerIDs), len(followerIDs))

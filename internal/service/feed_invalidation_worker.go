@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -19,6 +20,7 @@ type workerFeedInboxFanout interface {
 }
 
 type PostCreatedEvent struct {
+	StreamID     string
 	AuthorUserID int64
 	PostID       int64
 	OccurredAt   int64
@@ -81,8 +83,21 @@ func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, eve
 	if w.hybridPolicy != nil {
 		mode = w.hybridPolicy.DecideByFollowerCount(len(followerIDs))
 	}
+	log.Printf(
+		"feed event dispatch stream_id=%s author_id=%d post_id=%d follower_count=%d mode=%s",
+		event.StreamID,
+		event.AuthorUserID,
+		event.PostID,
+		len(followerIDs),
+		mode,
+	)
 	if mode == FeedDeliveryPushAndPull && w.inboxFanout != nil && event.PostID > 0 {
-		if err := w.inboxFanout.FanoutPostToFollowers(ctx, followerIDs, event.PostID, event.OccurredAt); err != nil {
+		fanoutCtx := withFeedEventLogFields(ctx, feedEventLogFields{
+			StreamID:     event.StreamID,
+			AuthorUserID: event.AuthorUserID,
+			PostID:       event.PostID,
+		})
+		if err := w.inboxFanout.FanoutPostToFollowers(fanoutCtx, followerIDs, event.PostID, event.OccurredAt); err != nil {
 			return fmt.Errorf("push inbox fanout failed for post_id=%d: %w", event.PostID, err)
 		}
 	}

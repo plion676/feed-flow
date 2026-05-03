@@ -87,6 +87,14 @@ func New(cfg *Config) *App {
 			BatchMultiplier: cfg.Feed.Exposure.BatchMultiplier,
 		})
 	}
+	feedService = feedService.WithMixPolicy(service.FeedMixOptions{
+		PushRatioNumerator:   cfg.Feed.Hybrid.Mix.PushRatioNumerator,
+		PushRatioDenominator: cfg.Feed.Hybrid.Mix.PushRatioDenominator,
+		MinPullItems:         cfg.Feed.Hybrid.Mix.MinPullItems,
+		MaxConsecutiveAuthor: cfg.Feed.Hybrid.Mix.MaxConsecutiveAuthor,
+		AuthorCooldownWindow: cfg.Feed.Hybrid.Mix.AuthorCooldownWindow,
+		MaxConsecutiveSource: cfg.Feed.Hybrid.Mix.MaxConsecutiveSource,
+	})
 	if feedCacheInvalidator != nil {
 		postService = postService.WithFeedCacheInvalidator(feedCacheInvalidator)
 		followService = followService.WithFeedCacheInvalidator(feedCacheInvalidator)

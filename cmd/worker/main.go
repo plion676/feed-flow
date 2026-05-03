@@ -52,7 +52,10 @@ func main() {
 		WithHybridPolicy(service.NewFeedHybridPolicy(cfg.Feed.Hybrid.PushFollowerThreshold))
 	if cfg.Feed.Inbox.Enabled {
 		inboxRepo := repository.NewFeedInboxRepository(redisClient)
-		worker = worker.WithInboxFanout(service.NewFeedInboxFanout(inboxRepo, cfg.Feed.Inbox.MaxItems))
+		inboxCfg := buildInboxFanoutOptions(cfg)
+		inboxFanout := service.NewFeedInboxFanout(inboxRepo, inboxCfg.MaxItems).
+			WithBatchOptions(inboxCfg.BatchSize, inboxCfg.Workers)
+		worker = worker.WithInboxFanout(inboxFanout)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -65,6 +68,7 @@ func main() {
 	for {
 		err = eventRepo.ConsumePostCreatedEvents(ctx, func(ctx context.Context, event repository.FeedInvalidationEvent) error {
 			return worker.HandlePostCreatedEvent(ctx, service.PostCreatedEvent{
+				StreamID:     event.StreamID,
 				AuthorUserID: event.AuthorID,
 				PostID:       event.PostID,
 				OccurredAt:   event.OccurredAt,
@@ -110,6 +114,12 @@ type workerRetryConfig struct {
 	JitterPercent  int
 }
 
+type inboxFanoutOptions struct {
+	MaxItems  int64
+	BatchSize int
+	Workers   int
+}
+
 func buildRetryConfig(cfg *app.Config) workerRetryConfig {
 	initial := defaultConsumeRetryInitialBackoff
 	maxBackoff := defaultConsumeRetryMaxBackoff
@@ -134,6 +144,17 @@ func buildRetryConfig(cfg *app.Config) workerRetryConfig {
 		InitialBackoff: initial,
 		MaxBackoff:     maxBackoff,
 		JitterPercent:  clampPercent(jitterPercent),
+	}
+}
+
+func buildInboxFanoutOptions(cfg *app.Config) inboxFanoutOptions {
+	if cfg == nil {
+		return inboxFanoutOptions{}
+	}
+	return inboxFanoutOptions{
+		MaxItems:  cfg.Feed.Inbox.MaxItems,
+		BatchSize: cfg.Feed.Inbox.BatchSize,
+		Workers:   cfg.Feed.Inbox.Workers,
 	}
 }
 

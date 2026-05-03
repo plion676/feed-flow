@@ -12,7 +12,7 @@ import (
 // FeedInboxRepository stores push-lane inbox items in Redis ZSET.
 // Key: feed:inbox:{user_id}
 // Score: occurred_at unix seconds (newer is larger)
-// Member: post_id string
+// Member: post_id string, so repeated fanout of the same post is naturally idempotent in ZSET.
 type FeedInboxRepository struct {
 	client *redis.Client
 }

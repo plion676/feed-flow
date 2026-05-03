@@ -1,7 +1,10 @@
 package repository
 
 import (
+	"bytes"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +156,39 @@ func TestWithConsumerConfig(t *testing.T) {
 	}
 	if repo.dlqStreamKey != "custom:dlq:stream" {
 		t.Fatalf("unexpected dlq stream key: %s", repo.dlqStreamKey)
+	}
+}
+
+func TestLogFeedEventf(t *testing.T) {
+	repo := &FeedInvalidationEventRepository{
+		groupName:    "test-group",
+		consumerName: "test-consumer",
+	}
+	oldWriter := log.Writer()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(oldWriter)
+
+	repo.logFeedEventf("handle_failed", "xreadgroup", "1740000000000-0", FeedInvalidationEvent{
+		AuthorID: 1001,
+		PostID:   3001,
+	}, "retry=%d/%d err=%v", 1, 5, errors.New("redis timeout"))
+
+	got := buf.String()
+	for _, want := range []string{
+		"feed_event action=handle_failed",
+		"source=xreadgroup",
+		"stream_id=1740000000000-0",
+		"group=test-group",
+		"consumer=test-consumer",
+		"author_id=1001",
+		"post_id=3001",
+		"retry=1/5",
+		"err=redis timeout",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("unexpected log output, missing %q in %q", want, got)
+		}
 	}
 }
 

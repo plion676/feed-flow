@@ -20,9 +20,18 @@ jwt:
 feed:
   hybrid:
     push_follower_threshold: 100
+    mix:
+      push_ratio_numerator: 2
+      push_ratio_denominator: 3
+      min_pull_items: 1
+      max_consecutive_author: 2
+      author_cooldown_window: 2
+      max_consecutive_source: 2
   inbox:
     enabled: true
     max_items: 1000
+    batch_size: 200
+    workers: 8
   exposure:
     enabled: true
     window_hours: 24

@@ -11,6 +11,8 @@ const (
 	defaultFeedMixPushRatioDenominator = 3
 	defaultFeedMixMinPullItems         = 1
 	defaultFeedMixMaxConsecutiveAuthor = 2
+	defaultFeedMixAuthorCooldownWindow = 2
+	defaultFeedMixMaxConsecutiveSource = 2
 )
 
 type feedMixSource string
@@ -25,6 +27,17 @@ type feedMixPolicy struct {
 	pushRatioDenominator int
 	minPullItems         int
 	maxConsecutiveAuthor int
+	authorCooldownWindow int
+	maxConsecutiveSource int
+}
+
+type FeedMixOptions struct {
+	PushRatioNumerator   int
+	PushRatioDenominator int
+	MinPullItems         *int
+	MaxConsecutiveAuthor int
+	AuthorCooldownWindow int
+	MaxConsecutiveSource *int
 }
 
 type feedMixCandidate struct {
@@ -57,11 +70,36 @@ func defaultFeedMixPolicy() feedMixPolicy {
 		pushRatioDenominator: defaultFeedMixPushRatioDenominator,
 		minPullItems:         defaultFeedMixMinPullItems,
 		maxConsecutiveAuthor: defaultFeedMixMaxConsecutiveAuthor,
+		authorCooldownWindow: defaultFeedMixAuthorCooldownWindow,
+		maxConsecutiveSource: defaultFeedMixMaxConsecutiveSource,
 	}
 }
 
-func mixFeedPostsForPage(inboxPosts []*model.Post, pullPosts []*model.Post, pageLimit int) []*model.Post {
-	page := defaultFeedMixPolicy().mixPageForCursor(inboxPosts, pullPosts, pageLimit, 0, 0)
+func newFeedMixPolicy(options FeedMixOptions) feedMixPolicy {
+	policy := defaultFeedMixPolicy()
+	if options.PushRatioNumerator > 0 {
+		policy.pushRatioNumerator = options.PushRatioNumerator
+	}
+	if options.PushRatioDenominator > 0 {
+		policy.pushRatioDenominator = options.PushRatioDenominator
+	}
+	if options.MinPullItems != nil {
+		policy.minPullItems = *options.MinPullItems
+	}
+	if options.MaxConsecutiveAuthor > 0 {
+		policy.maxConsecutiveAuthor = options.MaxConsecutiveAuthor
+	}
+	if options.AuthorCooldownWindow >= 0 {
+		policy.authorCooldownWindow = options.AuthorCooldownWindow
+	}
+	if options.MaxConsecutiveSource != nil {
+		policy.maxConsecutiveSource = *options.MaxConsecutiveSource
+	}
+	return policy
+}
+
+func mixFeedPostsForPage(inboxPosts []*model.Post, pullPosts []*model.Post, pageLimit int, policy feedMixPolicy) []*model.Post {
+	page := policy.mixPageForCursor(inboxPosts, pullPosts, pageLimit, 0, 0)
 	result := append([]*model.Post{}, page.visible...)
 	if page.probe != nil {
 		result = append(result, page.probe)
@@ -75,8 +113,9 @@ func mixFeedPageForCursor(
 	pageLimit int,
 	inboxCursor int64,
 	pullCursor int64,
+	policy feedMixPolicy,
 ) feedMixPageResult {
-	return defaultFeedMixPolicy().mixPageForCursor(inboxPosts, pullPosts, pageLimit, inboxCursor, pullCursor)
+	return policy.mixPageForCursor(inboxPosts, pullPosts, pageLimit, inboxCursor, pullCursor)
 }
 
 func (p feedMixPolicy) mixPageForCursor(
@@ -103,10 +142,29 @@ func (p feedMixPolicy) mixPageForCursor(
 	pullUsed := 0
 	lastAuthorID := int64(0)
 	authorStreak := 0
+	authorHistory := make([]int64, 0, pageLimit)
+	lastSource := feedMixSource("")
+	sourceStreak := 0
 
 	for len(visible) < pageLimit {
-		inboxPick := nextFeedMixPick(inboxCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
-		pullPick := nextFeedMixPick(pullCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
+		inboxPick := nextFeedMixPick(
+			inboxCandidates,
+			seen,
+			lastAuthorID,
+			authorStreak,
+			p.maxConsecutiveAuthor,
+			authorHistory,
+			p.authorCooldownWindow,
+		)
+		pullPick := nextFeedMixPick(
+			pullCandidates,
+			seen,
+			lastAuthorID,
+			authorStreak,
+			p.maxConsecutiveAuthor,
+			authorHistory,
+			p.authorCooldownWindow,
+		)
 		source, pick, ok := chooseFeedMixPick(
 			inboxPick,
 			pullPick,
@@ -118,6 +176,9 @@ func (p feedMixPolicy) mixPageForCursor(
 			lastAuthorID,
 			authorStreak,
 			p.maxConsecutiveAuthor,
+			lastSource,
+			sourceStreak,
+			p.maxConsecutiveSource,
 		)
 		if !ok {
 			break
@@ -131,6 +192,13 @@ func (p feedMixPolicy) mixPageForCursor(
 			lastAuthorID = pick.candidate.post.UserID
 			authorStreak = 1
 		}
+		authorHistory = append(authorHistory, pick.candidate.post.UserID)
+		if source == lastSource {
+			sourceStreak++
+		} else {
+			lastSource = source
+			sourceStreak = 1
+		}
 
 		switch source {
 		case feedMixSourceInbox:
@@ -142,7 +210,16 @@ func (p feedMixPolicy) mixPageForCursor(
 		}
 	}
 
-	probe, hasMore := p.probeNextPost(inboxCandidates, pullCandidates, seen, lastAuthorID, authorStreak)
+	probe, hasMore := p.probeNextPost(
+		inboxCandidates,
+		pullCandidates,
+		seen,
+		lastAuthorID,
+		authorStreak,
+		authorHistory,
+		lastSource,
+		sourceStreak,
+	)
 
 	return feedMixPageResult{
 		visible:             visible,
@@ -188,15 +265,31 @@ func nextFeedMixPick(
 	lastAuthorID int64,
 	authorStreak int,
 	maxConsecutiveAuthor int,
+	authorHistory []int64,
+	authorCooldownWindow int,
 ) feedMixPick {
 	preferDifferentAuthor := shouldAvoidSameAuthor(lastAuthorID, authorStreak, maxConsecutiveAuthor)
+	preferCooldownAuthor := shouldAvoidCooldownAuthor(authorHistory, authorCooldownWindow)
 	fallback := feedMixPick{}
+	cooldownFallback := feedMixPick{}
 
 	for i, candidate := range candidates {
 		if candidate.post == nil || candidate.post.ID <= 0 {
 			continue
 		}
 		if _, ok := seen[candidate.post.ID]; ok {
+			continue
+		}
+		inCooldown := isAuthorInRecentHistory(candidate.post.UserID, authorHistory, authorCooldownWindow)
+		if preferCooldownAuthor && inCooldown {
+			if !cooldownFallback.ok {
+				cooldownFallback = feedMixPick{
+					index:           i,
+					candidate:       candidate,
+					ok:              true,
+					respectsScatter: !preferDifferentAuthor || candidate.post.UserID != lastAuthorID,
+				}
+			}
 			continue
 		}
 		if !preferDifferentAuthor {
@@ -224,6 +317,9 @@ func nextFeedMixPick(
 			}
 		}
 	}
+	if cooldownFallback.ok {
+		return cooldownFallback
+	}
 	return fallback
 }
 
@@ -233,20 +329,63 @@ func (p feedMixPolicy) probeNextPost(
 	seen map[int64]struct{},
 	lastAuthorID int64,
 	authorStreak int,
+	authorHistory []int64,
+	lastSource feedMixSource,
+	sourceStreak int,
 ) (*model.Post, bool) {
-	inboxPick := nextFeedMixPick(inboxCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
-	pullPick := nextFeedMixPick(pullCandidates, seen, lastAuthorID, authorStreak, p.maxConsecutiveAuthor)
+	inboxPick := nextFeedMixPick(
+		inboxCandidates,
+		seen,
+		lastAuthorID,
+		authorStreak,
+		p.maxConsecutiveAuthor,
+		authorHistory,
+		p.authorCooldownWindow,
+	)
+	pullPick := nextFeedMixPick(
+		pullCandidates,
+		seen,
+		lastAuthorID,
+		authorStreak,
+		p.maxConsecutiveAuthor,
+		authorHistory,
+		p.authorCooldownWindow,
+	)
 	_, pick, ok := chooseFeedMixPickByRecency(
 		inboxPick,
 		pullPick,
 		lastAuthorID,
 		authorStreak,
 		p.maxConsecutiveAuthor,
+		lastSource,
+		sourceStreak,
+		p.maxConsecutiveSource,
 	)
 	if !ok {
 		return nil, false
 	}
 	return pick.candidate.post, true
+}
+
+func shouldAvoidCooldownAuthor(authorHistory []int64, authorCooldownWindow int) bool {
+	return authorCooldownWindow > 0 && len(authorHistory) >= authorCooldownWindow
+}
+
+func isAuthorInRecentHistory(authorID int64, authorHistory []int64, authorCooldownWindow int) bool {
+	if authorID <= 0 || authorCooldownWindow <= 0 || len(authorHistory) == 0 {
+		return false
+	}
+
+	start := len(authorHistory) - authorCooldownWindow
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(authorHistory); i++ {
+		if authorHistory[i] == authorID {
+			return true
+		}
+	}
+	return false
 }
 
 func chooseFeedMixPick(
@@ -260,6 +399,9 @@ func chooseFeedMixPick(
 	lastAuthorID int64,
 	authorStreak int,
 	maxConsecutiveAuthor int,
+	lastSource feedMixSource,
+	sourceStreak int,
+	maxConsecutiveSource int,
 ) (feedMixSource, feedMixPick, bool) {
 	if !inboxPick.ok && !pullPick.ok {
 		return "", feedMixPick{}, false
@@ -282,6 +424,15 @@ func chooseFeedMixPick(
 		return feedMixSourcePull, pullPick, true
 	}
 
+	if shouldAvoidSameSource(lastSource, sourceStreak, maxConsecutiveSource) {
+		if lastSource == feedMixSourceInbox {
+			return feedMixSourcePull, pullPick, true
+		}
+		if lastSource == feedMixSourcePull {
+			return feedMixSourceInbox, inboxPick, true
+		}
+	}
+
 	if shouldAvoidSameAuthor(lastAuthorID, authorStreak, maxConsecutiveAuthor) &&
 		inboxPick.respectsScatter != pullPick.respectsScatter {
 		if inboxPick.respectsScatter {
@@ -302,6 +453,9 @@ func chooseFeedMixPickByRecency(
 	lastAuthorID int64,
 	authorStreak int,
 	maxConsecutiveAuthor int,
+	lastSource feedMixSource,
+	sourceStreak int,
+	maxConsecutiveSource int,
 ) (feedMixSource, feedMixPick, bool) {
 	if !inboxPick.ok && !pullPick.ok {
 		return "", feedMixPick{}, false
@@ -319,6 +473,15 @@ func chooseFeedMixPickByRecency(
 			return feedMixSourceInbox, inboxPick, true
 		}
 		return feedMixSourcePull, pullPick, true
+	}
+
+	if shouldAvoidSameSource(lastSource, sourceStreak, maxConsecutiveSource) {
+		if lastSource == feedMixSourceInbox {
+			return feedMixSourcePull, pullPick, true
+		}
+		if lastSource == feedMixSourcePull {
+			return feedMixSourceInbox, inboxPick, true
+		}
 	}
 
 	if inboxPick.candidate.post.ID >= pullPick.candidate.post.ID {
@@ -367,6 +530,10 @@ func shouldAvoidSameAuthor(lastAuthorID int64, authorStreak int, maxConsecutiveA
 	return lastAuthorID > 0 && maxConsecutiveAuthor > 0 && authorStreak >= maxConsecutiveAuthor
 }
 
+func shouldAvoidSameSource(lastSource feedMixSource, sourceStreak int, maxConsecutiveSource int) bool {
+	return lastSource != "" && maxConsecutiveSource > 0 && sourceStreak >= maxConsecutiveSource
+}
+
 func (p feedMixPolicy) resolvePushQuota(pageLimit int, pullCount int) int {
 	if pageLimit <= 0 {
 		return 0
@@ -398,8 +565,8 @@ func (p feedMixPolicy) resolveMinPullItems(pageLimit int, pullCount int) int {
 	}
 
 	minPullItems := p.minPullItems
-	if minPullItems <= 0 {
-		minPullItems = defaultFeedMixMinPullItems
+	if minPullItems < 0 {
+		minPullItems = 0
 	}
 	if minPullItems > pageLimit {
 		minPullItems = pageLimit

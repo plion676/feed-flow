@@ -32,6 +32,7 @@ var ErrDLQEventNotFound = errors.New("dlq event not found")
 
 // FeedInvalidationEvent is the payload for async feed cache invalidation jobs.
 type FeedInvalidationEvent struct {
+	StreamID   string `json:"-"`
 	Type       string `json:"type"`
 	AuthorID   int64  `json:"author_id"`
 	PostID     int64  `json:"post_id"`
@@ -130,6 +131,31 @@ func (r *FeedInvalidationEventRepository) WithConsumerConfig(cfg FeedInvalidatio
 	return r
 }
 
+func (r *FeedInvalidationEventRepository) logFeedEventf(
+	action string,
+	readSource string,
+	streamID string,
+	event FeedInvalidationEvent,
+	extraFormat string,
+	extraArgs ...any,
+) {
+	format := "feed_event action=%s source=%s stream_id=%s group=%s consumer=%s author_id=%d post_id=%d"
+	args := []any{
+		action,
+		readSource,
+		streamID,
+		r.groupName,
+		r.consumerName,
+		event.AuthorID,
+		event.PostID,
+	}
+	if strings.TrimSpace(extraFormat) != "" {
+		format += " " + extraFormat
+		args = append(args, extraArgs...)
+	}
+	log.Printf(format, args...)
+}
+
 func (r *FeedInvalidationEventRepository) PublishPostCreated(ctx context.Context, authorUserID int64) error {
 	return r.PublishPostCreatedEvent(ctx, authorUserID, 0)
 }
@@ -213,7 +239,7 @@ func (r *FeedInvalidationEventRepository) ConsumePostCreatedEvents(
 		}
 		if time.Since(lastProgress) >= r.idleLogAfter {
 			log.Printf(
-				"feed invalidation stream waiting group=%s consumer=%s block=%s",
+				"feed_event action=waiting source=stream stream_id= group=%s consumer=%s author_id=0 post_id=0 block=%s",
 				r.groupName,
 				r.consumerName,
 				r.block,
@@ -335,26 +361,14 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 		if !ok {
 			// Drop malformed messages to prevent poison-message infinite retry.
 			shouldAck = true
-			log.Printf(
-				"drop malformed feed event source=%s stream_id=%s group=%s consumer=%s",
-				readSource,
-				msg.ID,
-				r.groupName,
-				r.consumerName,
-			)
+			r.logFeedEventf("drop_malformed", readSource, msg.ID, FeedInvalidationEvent{}, "")
 		} else {
 			event = decodedEvent
+			event.StreamID = msg.ID
 			if event.Type != "post_created" || event.AuthorID <= 0 {
 				// Unknown type/invalid payload: ack and skip.
 				shouldAck = true
-				log.Printf(
-					"skip invalid feed event source=%s stream_id=%s type=%s author_id=%d post_id=%d",
-					readSource,
-					msg.ID,
-					event.Type,
-					event.AuthorID,
-					event.PostID,
-				)
+				r.logFeedEventf("skip_invalid", readSource, msg.ID, event, "type=%s", event.Type)
 			} else if err := handler(ctx, event); err == nil {
 				shouldAck = true
 				clearRetryCounter = true
@@ -368,14 +382,7 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 
 		if shouldAck {
 			if err := r.client.XAck(ctx, feedInvalidationStreamKey, r.groupName, msg.ID).Err(); err != nil {
-				log.Printf(
-					"ack feed event failed source=%s stream_id=%s author_id=%d post_id=%d err=%v",
-					readSource,
-					msg.ID,
-					event.AuthorID,
-					event.PostID,
-					err,
-				)
+				r.logFeedEventf("ack_failed", readSource, msg.ID, event, "err=%v", err)
 				return fmt.Errorf(
 					"ack feed event source=%s stream_id=%s author_id=%d post_id=%d: %w",
 					readSource,
@@ -405,12 +412,12 @@ func (r *FeedInvalidationEventRepository) handleHandlerFailure(
 		return false, false, err
 	}
 
-	log.Printf(
-		"handle feed event failed source=%s stream_id=%s author_id=%d post_id=%d retry=%d/%d err=%v",
+	r.logFeedEventf(
+		"handle_failed",
 		readSource,
 		msg.ID,
-		event.AuthorID,
-		event.PostID,
+		event,
+		"retry=%d/%d err=%v",
 		retryCount,
 		r.retryMax,
 		handlerErr,
@@ -424,11 +431,14 @@ func (r *FeedInvalidationEventRepository) handleHandlerFailure(
 		return false, false, err
 	}
 
-	log.Printf(
-		"move feed event to dlq stream_id=%s dlq_stream=%s retry=%d",
+	r.logFeedEventf(
+		"move_to_dlq",
+		readSource,
 		msg.ID,
-		r.dlqStreamKey,
+		event,
+		"retry=%d dlq_stream=%s",
 		retryCount,
+		r.dlqStreamKey,
 	)
 	// ACK original message only after DLQ write succeeds.
 	return true, true, nil
@@ -458,7 +468,7 @@ func (r *FeedInvalidationEventRepository) clearRetryCounter(ctx context.Context,
 	}
 	key := buildRetryCounterKey(streamID)
 	if err := r.client.Del(ctx, key).Err(); err != nil {
-		log.Printf("clear retry counter failed key=%s stream_id=%s err=%v", key, streamID, err)
+		log.Printf("feed_event action=clear_retry_failed source=retry stream_id=%s group=%s consumer=%s author_id=0 post_id=0 key=%s err=%v", streamID, r.groupName, r.consumerName, key, err)
 	}
 }
 
@@ -671,5 +681,6 @@ func decodeFeedInvalidationEvent(payloadValue any) (FeedInvalidationEvent, bool)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
 		return FeedInvalidationEvent{}, false
 	}
+	event.StreamID = ""
 	return event, true
 }

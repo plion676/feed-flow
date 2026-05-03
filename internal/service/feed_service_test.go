@@ -12,6 +12,10 @@ import (
 	"github.com/plion676/feed-flow/internal/pkg/xerror"
 )
 
+func intPtr(v int) *int {
+	return &v
+}
+
 type fakeFeedFollowRepo struct {
 	followingIDs []int64
 	err          error
@@ -1006,7 +1010,7 @@ func TestMixFeedPostsForPage(t *testing.T) {
 			{ID: 9, UserID: 1001, Content: "pull-9", Status: 1, CreatedAt: now.Add(-time.Minute)},
 		}
 
-		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 3)
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 3, defaultFeedMixPolicy())
 		wantOrder := []int64{11, 10, 9, 8}
 		if len(mixed) != len(wantOrder) {
 			t.Fatalf("unexpected mixed count: got=%d want=%d", len(mixed), len(wantOrder))
@@ -1031,7 +1035,7 @@ func TestMixFeedPostsForPage(t *testing.T) {
 			{ID: 8, UserID: 1001, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
 		}
 
-		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 3)
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 3, defaultFeedMixPolicy())
 		wantOrder := []int64{12, 11, 9, 10}
 		if len(mixed) != len(wantOrder) {
 			t.Fatalf("unexpected reserved count: got=%d want=%d", len(mixed), len(wantOrder))
@@ -1057,7 +1061,7 @@ func TestMixFeedPostsForPage(t *testing.T) {
 			{ID: 8, UserID: 1004, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
 		}
 
-		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 4)
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 4, defaultFeedMixPolicy())
 		wantOrder := []int64{13, 12, 9, 11, 10}
 		if len(mixed) != len(wantOrder) {
 			t.Fatalf("unexpected scatter count: got=%d want=%d", len(mixed), len(wantOrder))
@@ -1065,6 +1069,133 @@ func TestMixFeedPostsForPage(t *testing.T) {
 		for i, wantID := range wantOrder {
 			if mixed[i].ID != wantID {
 				t.Fatalf("unexpected scatter order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
+
+	t.Run("configured mix policy should disable pull reserve when min pull is zero", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 12, UserID: 1002, Content: "inbox-12", Status: 1, CreatedAt: now},
+		}
+		pullPosts := []*model.Post{
+			{ID: 11, UserID: 2001, Content: "pull-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+		}
+
+		policy := newFeedMixPolicy(FeedMixOptions{
+			PushRatioNumerator:   1,
+			PushRatioDenominator: 1,
+			MinPullItems:         intPtr(0),
+			MaxConsecutiveAuthor: 3,
+		})
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 1, policy)
+		wantOrder := []int64{12, 11}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected configured count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected configured order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
+
+	t.Run("author cooldown window should avoid recently shown author when alternatives exist", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 12, UserID: 1001, Content: "a-12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 1002, Content: "b-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+		}
+		pullPosts := []*model.Post{
+			{ID: 10, UserID: 1001, Content: "a-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+			{ID: 9, UserID: 1003, Content: "c-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+		}
+
+		policy := newFeedMixPolicy(FeedMixOptions{
+			PushRatioNumerator:   1,
+			PushRatioDenominator: 1,
+			MinPullItems:         intPtr(0),
+			MaxConsecutiveAuthor: 3,
+			AuthorCooldownWindow: 2,
+		})
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 4, policy)
+		wantOrder := []int64{12, 11, 9, 10}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected cooldown count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected cooldown order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
+
+	t.Run("max consecutive source should switch source when alternatives exist", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 12, UserID: 2001, Content: "inbox-12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 2002, Content: "inbox-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			{ID: 10, UserID: 2003, Content: "inbox-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+		}
+		pullPosts := []*model.Post{
+			{ID: 9, UserID: 3001, Content: "pull-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+			{ID: 8, UserID: 3002, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+		}
+
+		policy := newFeedMixPolicy(FeedMixOptions{
+			PushRatioNumerator:   1,
+			PushRatioDenominator: 1,
+			MinPullItems:         intPtr(0),
+			MaxConsecutiveAuthor: 3,
+			AuthorCooldownWindow: 0,
+			MaxConsecutiveSource: intPtr(1),
+		})
+
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 4, policy)
+		wantOrder := []int64{12, 9, 11, 8, 10}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected source-scatter count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected source-scatter order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
+			}
+		}
+	})
+
+	t.Run("max consecutive source disabled should keep recency preference", func(t *testing.T) {
+		t.Parallel()
+
+		inboxPosts := []*model.Post{
+			{ID: 12, UserID: 2001, Content: "inbox-12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 2002, Content: "inbox-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			{ID: 10, UserID: 2003, Content: "inbox-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+		}
+		pullPosts := []*model.Post{
+			{ID: 9, UserID: 3001, Content: "pull-9", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+			{ID: 8, UserID: 3002, Content: "pull-8", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+		}
+
+		policy := newFeedMixPolicy(FeedMixOptions{
+			PushRatioNumerator:   1,
+			PushRatioDenominator: 1,
+			MinPullItems:         intPtr(0),
+			MaxConsecutiveAuthor: 3,
+			AuthorCooldownWindow: 0,
+			MaxConsecutiveSource: intPtr(0),
+		})
+
+		mixed := mixFeedPostsForPage(inboxPosts, pullPosts, 4, policy)
+		wantOrder := []int64{12, 11, 10, 9, 8}
+		if len(mixed) != len(wantOrder) {
+			t.Fatalf("unexpected source-disabled count: got=%d want=%d", len(mixed), len(wantOrder))
+		}
+		for i, wantID := range wantOrder {
+			if mixed[i].ID != wantID {
+				t.Fatalf("unexpected source-disabled order at %d: got=%d want=%d", i, mixed[i].ID, wantID)
 			}
 		}
 	})

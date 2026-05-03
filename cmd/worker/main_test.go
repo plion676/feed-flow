@@ -7,6 +7,10 @@ import (
 	"github.com/plion676/feed-flow/internal/app"
 )
 
+func intPtr(v int) *int {
+	return &v
+}
+
 func TestNextRetryBackoff(t *testing.T) {
 	t.Parallel()
 
@@ -97,6 +101,15 @@ func TestBuildEventConsumerConfig(t *testing.T) {
 
 	cfg := &app.Config{
 		Feed: app.FeedConfig{
+			Hybrid: app.FeedHybridConfig{
+				PushFollowerThreshold: 100,
+				Mix: app.FeedMixConfig{
+					PushRatioNumerator:   2,
+					PushRatioDenominator: 3,
+					MinPullItems:         intPtr(1),
+					MaxConsecutiveAuthor: 2,
+				},
+			},
 			Worker: app.FeedWorkerConfig{
 				ReclaimMinIdleSeconds:  40,
 				IdleLogIntervalSeconds: 12,
@@ -127,4 +140,43 @@ func TestBuildEventConsumerConfig(t *testing.T) {
 	if got.DLQStreamKey != "feed:invalidation:dlq:custom" {
 		t.Fatalf("unexpected dlq stream key: %s", got.DLQStreamKey)
 	}
+}
+
+func TestBuildInboxFanoutOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("should map inbox fanout config", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &app.Config{
+			Feed: app.FeedConfig{
+				Inbox: app.FeedInboxConfig{
+					Enabled:   true,
+					MaxItems:  1000,
+					BatchSize: 256,
+					Workers:   12,
+				},
+			},
+		}
+
+		got := buildInboxFanoutOptions(cfg)
+		if got.MaxItems != 1000 {
+			t.Fatalf("unexpected max items: got=%d want=1000", got.MaxItems)
+		}
+		if got.BatchSize != 256 {
+			t.Fatalf("unexpected batch size: got=%d want=256", got.BatchSize)
+		}
+		if got.Workers != 12 {
+			t.Fatalf("unexpected workers: got=%d want=12", got.Workers)
+		}
+	})
+
+	t.Run("nil config should return zero options", func(t *testing.T) {
+		t.Parallel()
+
+		got := buildInboxFanoutOptions(nil)
+		if got != (inboxFanoutOptions{}) {
+			t.Fatalf("unexpected zero options: %+v", got)
+		}
+	})
 }
