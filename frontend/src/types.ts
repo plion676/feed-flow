@@ -58,6 +58,6 @@ export type FeedItem = {
 export type FeedResponse = {
   items: FeedItem[]
   next_cursor: number
+  next_cursor_token?: string
   has_more: boolean
 }
-

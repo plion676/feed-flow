@@ -52,12 +52,13 @@ export const api = {
     })
   },
 
-  getFeed(token: string, limit?: number, lastPostID?: number) {
+  getFeed(token: string, options?: { limit?: number; lastPostID?: number; cursor?: string }) {
     return client.get<ApiEnvelope<FeedResponse>>('/feed', {
       headers: authHeader(token),
       params: {
-        ...(typeof limit === 'number' ? { limit } : {}),
-        ...(typeof lastPostID === 'number' ? { last_post_id: lastPostID } : {}),
+        ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options?.lastPostID === 'number' ? { last_post_id: options.lastPostID } : {}),
+        ...(options?.cursor ? { cursor: options.cursor } : {}),
       },
     })
   },
