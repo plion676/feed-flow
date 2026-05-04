@@ -32,6 +32,18 @@ func (r *PostRepository) GetByID(ctx context.Context, postID int64) (*model.Post
 	return &post, nil
 }
 
+func (r *PostRepository) SoftDeleteByIDAndUserID(ctx context.Context, postID int64, userID int64) (bool, error) {
+	result := r.db.WithContext(ctx).
+		Model(&model.Post{}).
+		Where("id = ? AND user_id = ? AND status = ?", postID, userID, model.PostStatusPublished).
+		Update("status", model.PostStatusDeleted)
+	if result.Error != nil {
+		return false, result.Error
+	}
+
+	return result.RowsAffected > 0, nil
+}
+
 func (r *PostRepository) ListByUserIDs(ctx context.Context, userIDs []int64, lastPostID int64, limit int) ([]*model.Post, error) {
 	if len(userIDs) == 0 {
 		return []*model.Post{}, nil
@@ -39,7 +51,7 @@ func (r *PostRepository) ListByUserIDs(ctx context.Context, userIDs []int64, las
 
 	query := r.db.WithContext(ctx).
 		Model(&model.Post{}).
-		Where("status = 1").
+		Where("status = ?", model.PostStatusPublished).
 		Where("user_id IN ?", userIDs)
 
 	if lastPostID > 0 {
@@ -62,7 +74,7 @@ func (r *PostRepository) ListByIDs(ctx context.Context, postIDs []int64) ([]*mod
 	var posts []*model.Post
 	if err := r.db.WithContext(ctx).
 		Model(&model.Post{}).
-		Where("status = 1").
+		Where("status = ?", model.PostStatusPublished).
 		Where("id IN ?", postIDs).
 		Find(&posts).Error; err != nil {
 		return nil, err

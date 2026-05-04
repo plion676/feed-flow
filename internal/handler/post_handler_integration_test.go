@@ -55,6 +55,19 @@ func (r *fakePostRepoForHandler) GetByID(_ context.Context, postID int64) (*mode
 	return &copied, nil
 }
 
+func (r *fakePostRepoForHandler) SoftDeleteByIDAndUserID(_ context.Context, postID int64, userID int64) (bool, error) {
+	if r.posts == nil {
+		return false, nil
+	}
+	post, exists := r.posts[postID]
+	if !exists || post.UserID != userID || post.Status != model.PostStatusPublished {
+		return false, nil
+	}
+	post.Status = model.PostStatusDeleted
+	post.UpdatedAt = time.Date(2026, 4, 20, 13, 30, 0, 0, time.UTC)
+	return true, nil
+}
+
 type postAPIResponse struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
@@ -80,6 +93,7 @@ func TestPostCreateAndGetByIDFlow(t *testing.T) {
 	router := gin.New()
 	router.POST("/api/v1/posts", middleware.AuthJWT(jwtManager), postHandler.Create)
 	router.GET("/api/v1/posts/:id", postHandler.GetByID)
+	router.DELETE("/api/v1/posts/:id", middleware.AuthJWT(jwtManager), postHandler.Delete)
 
 	token, err := jwtManager.GenerateToken(1001)
 	if err != nil {
@@ -151,6 +165,31 @@ func TestPostCreateAndGetByIDFlow(t *testing.T) {
 	if got.Content != created.Content {
 		t.Fatalf("unexpected get content: got=%q want=%q", got.Content, created.Content)
 	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/posts/"+strconv.FormatInt(created.PostID, 10), nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, deleteReq)
+
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status: got=%d want=%d", deleteResp.Code, http.StatusOK)
+	}
+
+	var deleteBody postAPIResponse
+	if err := json.Unmarshal(deleteResp.Body.Bytes(), &deleteBody); err != nil {
+		t.Fatalf("unmarshal delete response failed: %v", err)
+	}
+	if deleteBody.Code != xerror.CodeOK {
+		t.Fatalf("unexpected delete code: got=%d want=%d", deleteBody.Code, xerror.CodeOK)
+	}
+
+	getDeletedReq := httptest.NewRequest(http.MethodGet, "/api/v1/posts/"+strconv.FormatInt(created.PostID, 10), nil)
+	getDeletedResp := httptest.NewRecorder()
+	router.ServeHTTP(getDeletedResp, getDeletedReq)
+
+	if getDeletedResp.Code != http.StatusNotFound {
+		t.Fatalf("deleted post should not be readable: got=%d want=%d", getDeletedResp.Code, http.StatusNotFound)
+	}
 }
 
 func TestPostCreateUnauthorized(t *testing.T) {
@@ -219,5 +258,57 @@ func TestPostGetByIDNotFound(t *testing.T) {
 	}
 	if body.Code != xerror.CodePostNotFound {
 		t.Fatalf("unexpected error code: got=%d want=%d", body.Code, xerror.CodePostNotFound)
+	}
+}
+
+func TestPostDeleteForbiddenForNonAuthor(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	jwtManager, err := jwtpkg.NewManager(jwtpkg.Config{
+		Secret:      "post-integration-secret",
+		ExpireHours: 1,
+	})
+	if err != nil {
+		t.Fatalf("new jwt manager failed: %v", err)
+	}
+
+	postRepo := &fakePostRepoForHandler{
+		posts: map[int64]*model.Post{
+			1: {
+				ID:        1,
+				UserID:    1001,
+				Content:   "author only",
+				Status:    model.PostStatusPublished,
+				CreatedAt: time.Date(2026, 4, 20, 13, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	postService := service.NewPostService(postRepo)
+	postHandler := NewPostHandler(postService)
+
+	router := gin.New()
+	router.DELETE("/api/v1/posts/:id", middleware.AuthJWT(jwtManager), postHandler.Delete)
+
+	token, err := jwtManager.GenerateToken(2002)
+	if err != nil {
+		t.Fatalf("generate token failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/posts/1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("unexpected delete status: got=%d want=%d", resp.Code, http.StatusForbidden)
+	}
+
+	var body postAPIResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if body.Code != xerror.CodeForbidden {
+		t.Fatalf("unexpected error code: got=%d want=%d", body.Code, xerror.CodeForbidden)
 	}
 }

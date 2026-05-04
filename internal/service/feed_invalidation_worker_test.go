@@ -255,4 +255,31 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 			t.Fatalf("expected fanout not called in pull mode, got=%d", fanout.called)
 		}
 	})
+
+	t.Run("post deleted should invalidate followers without inbox fanout", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{}
+		fanout := &fakeWorkerInboxFanout{}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithHybridPolicy(NewFeedHybridPolicy(100)).
+			WithInboxFanout(fanout)
+
+		err := worker.HandlePostDeletedEvent(ctx, PostLifecycleEvent{
+			StreamID:     "1740000000001-0",
+			AuthorUserID: 1001,
+			PostID:       3001,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fanout.called != 0 {
+			t.Fatalf("delete event should not fanout inbox writes, got=%d", fanout.called)
+		}
+		if invalidator.CalledCount() != len(followerIDs) {
+			t.Fatalf("unexpected invalidation call count: got=%d want=%d", invalidator.CalledCount(), len(followerIDs))
+		}
+	})
 }

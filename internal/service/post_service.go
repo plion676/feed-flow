@@ -13,6 +13,7 @@ import (
 type postRepository interface {
 	Create(ctx context.Context, post *model.Post) error
 	GetByID(ctx context.Context, postID int64) (*model.Post, error)
+	SoftDeleteByIDAndUserID(ctx context.Context, postID int64, userID int64) (bool, error)
 }
 
 type postFeedCacheInvalidator interface {
@@ -21,6 +22,7 @@ type postFeedCacheInvalidator interface {
 
 type postFeedInvalidationEventPublisher interface {
 	PublishPostCreatedEvent(ctx context.Context, authorUserID int64, postID int64) error
+	PublishPostDeletedEvent(ctx context.Context, authorUserID int64, postID int64) error
 }
 
 // PostService handles post create/read workflows.
@@ -35,11 +37,22 @@ type CreatePostRequest struct {
 	Content string
 }
 
+type DeletePostRequest struct {
+	UserID int64
+	PostID int64
+}
+
 type PostResult struct {
 	PostID    int64     `json:"post_id"`
 	UserID    int64     `json:"user_id"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type DeletePostResult struct {
+	PostID  int64 `json:"post_id"`
+	UserID  int64 `json:"user_id"`
+	Deleted bool  `json:"deleted"`
 }
 
 const maxPostContentLen = 500
@@ -72,7 +85,7 @@ func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostR
 	post := &model.Post{
 		UserID:  req.UserID,
 		Content: trimmedContent,
-		Status:  1,
+		Status:  model.PostStatusPublished,
 	}
 
 	err := s.postRepo.Create(ctx, post)
@@ -98,6 +111,44 @@ func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostR
 
 }
 
+func (s *PostService) Delete(ctx context.Context, req DeletePostRequest) (*DeletePostResult, *xerror.Error) {
+	if req.UserID <= 0 || req.PostID <= 0 {
+		return nil, xerror.ErrBadRequest
+	}
+
+	post, err := s.postRepo.GetByID(ctx, req.PostID)
+	if err != nil {
+		return nil, xerror.ErrInternal
+	}
+	if post == nil || post.Status != model.PostStatusPublished {
+		return nil, xerror.ErrPostNotFound
+	}
+	if post.UserID != req.UserID {
+		return nil, xerror.ErrForbidden
+	}
+
+	deleted, err := s.postRepo.SoftDeleteByIDAndUserID(ctx, req.PostID, req.UserID)
+	if err != nil {
+		return nil, xerror.ErrInternal
+	}
+	if !deleted {
+		return nil, xerror.ErrPostNotFound
+	}
+
+	if s.feedInvalidator != nil {
+		_ = s.feedInvalidator.InvalidateHomeFeed(ctx, req.UserID)
+	}
+	if s.invalidationEventPub != nil {
+		_ = s.invalidationEventPub.PublishPostDeletedEvent(ctx, req.UserID, req.PostID)
+	}
+
+	return &DeletePostResult{
+		PostID:  req.PostID,
+		UserID:  req.UserID,
+		Deleted: true,
+	}, nil
+}
+
 func (s *PostService) GetByID(ctx context.Context, postID int64) (*PostResult, *xerror.Error) {
 	if postID <= 0 {
 		return nil, xerror.ErrBadRequest
@@ -107,7 +158,7 @@ func (s *PostService) GetByID(ctx context.Context, postID int64) (*PostResult, *
 	if err != nil {
 		return nil, xerror.ErrInternal
 	}
-	if post == nil || post.Status != 1 {
+	if post == nil || post.Status != model.PostStatusPublished {
 		return nil, xerror.ErrPostNotFound
 	}
 

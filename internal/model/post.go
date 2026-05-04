@@ -2,6 +2,13 @@ package model
 
 import "time"
 
+const (
+	PostStatusDeleted   int32 = 0
+	PostStatusPublished int32 = 1
+	PostStatusReviewing int32 = 2
+	PostStatusHidden    int32 = 3
+)
+
 // Post maps to the posts table and stores user generated content.
 type Post struct {
 	ID        int64     `gorm:"column:id;primaryKey;autoIncrement"`

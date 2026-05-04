@@ -26,6 +26,8 @@ type PostCreatedEvent struct {
 	OccurredAt   int64
 }
 
+type PostLifecycleEvent = PostCreatedEvent
+
 // FeedInvalidationWorker handles async cache invalidation events.
 type FeedInvalidationWorker struct {
 	followRepo      workerFollowRepository
@@ -45,7 +47,7 @@ func NewFeedInvalidationWorker(followRepo workerFollowRepository, feedInvalidato
 }
 
 func (w *FeedInvalidationWorker) HandlePostCreated(ctx context.Context, authorUserID int64) error {
-	return w.HandlePostCreatedEvent(ctx, PostCreatedEvent{
+	return w.HandlePostCreatedEvent(ctx, PostLifecycleEvent{
 		AuthorUserID: authorUserID,
 	})
 }
@@ -62,7 +64,15 @@ func (w *FeedInvalidationWorker) WithInboxFanout(inboxFanout workerFeedInboxFano
 	return w
 }
 
-func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, event PostCreatedEvent) error {
+func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, event PostLifecycleEvent) error {
+	return w.handlePostLifecycleEvent(ctx, event, true)
+}
+
+func (w *FeedInvalidationWorker) HandlePostDeletedEvent(ctx context.Context, event PostLifecycleEvent) error {
+	return w.handlePostLifecycleEvent(ctx, event, false)
+}
+
+func (w *FeedInvalidationWorker) handlePostLifecycleEvent(ctx context.Context, event PostLifecycleEvent, allowInboxFanout bool) error {
 	authorUserID := event.AuthorUserID
 	if authorUserID <= 0 {
 		return nil
@@ -91,7 +101,7 @@ func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, eve
 		len(followerIDs),
 		mode,
 	)
-	if mode == FeedDeliveryPushAndPull && w.inboxFanout != nil && event.PostID > 0 {
+	if allowInboxFanout && mode == FeedDeliveryPushAndPull && w.inboxFanout != nil && event.PostID > 0 {
 		fanoutCtx := withFeedEventLogFields(ctx, feedEventLogFields{
 			StreamID:     event.StreamID,
 			AuthorUserID: event.AuthorUserID,

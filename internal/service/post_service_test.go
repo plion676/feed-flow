@@ -14,7 +14,9 @@ import (
 type fakePostRepo struct {
 	createErr error
 	getErr    error
+	deleteErr error
 	getPost   *model.Post
+	deleted   bool
 
 	createdPost *model.Post
 }
@@ -32,16 +34,25 @@ func (f *fakePostFeedInvalidator) InvalidateHomeFeed(_ context.Context, userID i
 }
 
 type fakePostInvalidationEventPublisher struct {
-	gotAuthorUserID int64
-	gotPostID       int64
-	called          int
-	err             error
+	gotAuthorUserID  int64
+	gotPostID        int64
+	called           int
+	deleteCalled     int
+	gotDeletedPostID int64
+	err              error
 }
 
 func (f *fakePostInvalidationEventPublisher) PublishPostCreatedEvent(_ context.Context, authorUserID int64, postID int64) error {
 	f.called++
 	f.gotAuthorUserID = authorUserID
 	f.gotPostID = postID
+	return f.err
+}
+
+func (f *fakePostInvalidationEventPublisher) PublishPostDeletedEvent(_ context.Context, authorUserID int64, postID int64) error {
+	f.deleteCalled++
+	f.gotAuthorUserID = authorUserID
+	f.gotDeletedPostID = postID
 	return f.err
 }
 
@@ -66,6 +77,18 @@ func (r *fakePostRepo) GetByID(_ context.Context, _ int64) (*model.Post, error) 
 		return nil, r.getErr
 	}
 	return r.getPost, nil
+}
+
+func (r *fakePostRepo) SoftDeleteByIDAndUserID(_ context.Context, postID int64, userID int64) (bool, error) {
+	if r.deleteErr != nil {
+		return false, r.deleteErr
+	}
+	if r.getPost == nil || r.getPost.ID != postID || r.getPost.UserID != userID || r.getPost.Status != model.PostStatusPublished {
+		return false, nil
+	}
+	r.deleted = true
+	r.getPost.Status = model.PostStatusDeleted
+	return true, nil
 }
 
 func TestPostServiceCreate(t *testing.T) {
@@ -298,6 +321,188 @@ func TestPostServiceGetByID(t *testing.T) {
 			}
 			if got.Content != tc.repo.getPost.Content {
 				t.Fatalf("unexpected content: got=%q want=%q", got.Content, tc.repo.getPost.Content)
+			}
+		})
+	}
+}
+
+func TestPostServiceDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 4, 20, 14, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name            string
+		req             DeletePostRequest
+		repo            *fakePostRepo
+		invalidator     *fakePostFeedInvalidator
+		eventPublisher  *fakePostInvalidationEventPublisher
+		wantErr         *xerror.Error
+		wantDeleted     bool
+		wantInvalidate  bool
+		wantDeleteEvent bool
+	}{
+		{
+			name:           "bad request when user id invalid",
+			req:            DeletePostRequest{UserID: 0, PostID: 1},
+			repo:           &fakePostRepo{},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrBadRequest,
+		},
+		{
+			name:           "bad request when post id invalid",
+			req:            DeletePostRequest{UserID: 1001, PostID: 0},
+			repo:           &fakePostRepo{},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrBadRequest,
+		},
+		{
+			name:           "internal error when get fails",
+			req:            DeletePostRequest{UserID: 1001, PostID: 1},
+			repo:           &fakePostRepo{getErr: errors.New("query failed")},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrInternal,
+		},
+		{
+			name:           "not found when post missing",
+			req:            DeletePostRequest{UserID: 1001, PostID: 1},
+			repo:           &fakePostRepo{},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrPostNotFound,
+		},
+		{
+			name: "not found when post already deleted",
+			req:  DeletePostRequest{UserID: 1001, PostID: 1},
+			repo: &fakePostRepo{getPost: &model.Post{
+				ID:        1,
+				UserID:    1001,
+				Content:   "deleted",
+				Status:    model.PostStatusDeleted,
+				CreatedAt: now,
+			}},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrPostNotFound,
+		},
+		{
+			name: "forbidden when current user is not author",
+			req:  DeletePostRequest{UserID: 2002, PostID: 1},
+			repo: &fakePostRepo{getPost: &model.Post{
+				ID:        1,
+				UserID:    1001,
+				Content:   "other user post",
+				Status:    model.PostStatusPublished,
+				CreatedAt: now,
+			}},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrForbidden,
+		},
+		{
+			name: "internal error when delete fails",
+			req:  DeletePostRequest{UserID: 1001, PostID: 1},
+			repo: &fakePostRepo{
+				getPost: &model.Post{
+					ID:        1,
+					UserID:    1001,
+					Content:   "delete failed",
+					Status:    model.PostStatusPublished,
+					CreatedAt: now,
+				},
+				deleteErr: errors.New("update failed"),
+			},
+			invalidator:    &fakePostFeedInvalidator{},
+			eventPublisher: &fakePostInvalidationEventPublisher{},
+			wantErr:        xerror.ErrInternal,
+		},
+		{
+			name: "success soft deletes author post",
+			req:  DeletePostRequest{UserID: 1001, PostID: 1},
+			repo: &fakePostRepo{getPost: &model.Post{
+				ID:        1,
+				UserID:    1001,
+				Content:   "hello",
+				Status:    model.PostStatusPublished,
+				CreatedAt: now,
+			}},
+			invalidator:     &fakePostFeedInvalidator{},
+			eventPublisher:  &fakePostInvalidationEventPublisher{},
+			wantDeleted:     true,
+			wantInvalidate:  true,
+			wantDeleteEvent: true,
+		},
+		{
+			name: "success even when delete event publish fails",
+			req:  DeletePostRequest{UserID: 1001, PostID: 1},
+			repo: &fakePostRepo{getPost: &model.Post{
+				ID:        1,
+				UserID:    1001,
+				Content:   "event down",
+				Status:    model.PostStatusPublished,
+				CreatedAt: now,
+			}},
+			invalidator:     &fakePostFeedInvalidator{},
+			eventPublisher:  &fakePostInvalidationEventPublisher{err: errors.New("stream down")},
+			wantDeleted:     true,
+			wantInvalidate:  true,
+			wantDeleteEvent: true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := NewPostService(tc.repo).
+				WithFeedCacheInvalidator(tc.invalidator).
+				WithFeedInvalidationEventPublisher(tc.eventPublisher)
+			got, gotErr := svc.Delete(ctx, tc.req)
+
+			if gotErr != tc.wantErr {
+				t.Fatalf("unexpected error: got=%v want=%v", gotErr, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				if got != nil {
+					t.Fatalf("expected nil result when error happens, got=%+v", got)
+				}
+				if tc.repo.deleted {
+					t.Fatal("post should not be deleted when request fails")
+				}
+				if tc.invalidator.called != 0 {
+					t.Fatalf("invalidator should not be called on failed delete, called=%d", tc.invalidator.called)
+				}
+				if tc.eventPublisher.deleteCalled != 0 {
+					t.Fatalf("delete event should not be published on failed delete, called=%d", tc.eventPublisher.deleteCalled)
+				}
+				return
+			}
+
+			if got == nil {
+				t.Fatal("expected non-nil result on success")
+			}
+			if got.PostID != tc.req.PostID || got.UserID != tc.req.UserID || got.Deleted != tc.wantDeleted {
+				t.Fatalf("unexpected delete result: got=%+v req=%+v", got, tc.req)
+			}
+			if !tc.repo.deleted {
+				t.Fatal("expected repository soft delete to be called")
+			}
+			if tc.wantInvalidate && tc.invalidator.called != 1 {
+				t.Fatalf("expected invalidator called once, got=%d", tc.invalidator.called)
+			}
+			if tc.wantInvalidate && tc.invalidator.gotUserID != tc.req.UserID {
+				t.Fatalf("unexpected invalidator user id: got=%d want=%d", tc.invalidator.gotUserID, tc.req.UserID)
+			}
+			if tc.wantDeleteEvent && tc.eventPublisher.deleteCalled != 1 {
+				t.Fatalf("expected delete event published once, got=%d", tc.eventPublisher.deleteCalled)
+			}
+			if tc.wantDeleteEvent && tc.eventPublisher.gotDeletedPostID != tc.req.PostID {
+				t.Fatalf("unexpected deleted post id: got=%d want=%d", tc.eventPublisher.gotDeletedPostID, tc.req.PostID)
 			}
 		})
 	}

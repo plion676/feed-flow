@@ -726,6 +726,57 @@ func TestFeedServiceGetHomeFeedInbox(t *testing.T) {
 		}
 	})
 
+	t.Run("inbox backfill should skip deleted posts and continue scanning", func(t *testing.T) {
+		t.Parallel()
+
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "deleted-12", Status: model.PostStatusDeleted, CreatedAt: now},
+				{ID: 11, UserID: 1002, Content: "p11", Status: model.PostStatusPublished, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1002, Content: "deleted-10", Status: model.PostStatusDeleted, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 9, UserID: 1002, Content: "p9", Status: model.PostStatusPublished, CreatedAt: now.Add(-3 * time.Minute)},
+				{ID: 8, UserID: 1002, Content: "p8", Status: model.PostStatusPublished, CreatedAt: now.Add(-4 * time.Minute)},
+			},
+		}
+		inboxRepo := &fakeFeedInboxRepo{
+			postIDsByUser: map[int64][]int64{
+				1001: {12, 11, 10, 9, 8},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{err: errors.New("pull unavailable")},
+			postRepo,
+		).WithInbox(inboxRepo)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("unexpected deleted-backfill result: %+v", got)
+		}
+
+		wantIDs := []int64{11, 9, 8}
+		for i, wantID := range wantIDs {
+			if got.Items[i].PostID != wantID {
+				t.Fatalf("unexpected item at index %d: got=%d want=%d", i, got.Items[i].PostID, wantID)
+			}
+		}
+		if got.HasMore {
+			t.Fatalf("unexpected has_more after deleted post backfill: %+v", got)
+		}
+		if postRepo.idsCalled < 2 {
+			t.Fatalf("expected multiple ListByIDs calls because deleted posts create inbox holes, got=%d", postRepo.idsCalled)
+		}
+		if postRepo.calledTimes != 0 {
+			t.Fatalf("pull query should be skipped when follow repo fails and inbox hit succeeds, pull_calls=%d", postRepo.calledTimes)
+		}
+	})
+
 	t.Run("hybrid cursor token should prevent gap when pull reservation reorders page", func(t *testing.T) {
 		t.Parallel()
 

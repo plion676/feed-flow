@@ -49,6 +49,31 @@ func (h *PostHandler) Create(c *gin.Context) {
 	response.Success(c, http.StatusOK, result)
 }
 
+func (h *PostHandler) Delete(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, xerror.ErrUnauthorized)
+		return
+	}
+
+	postID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || postID <= 0 {
+		response.Fail(c, http.StatusBadRequest, xerror.ErrBadRequest)
+		return
+	}
+
+	result, bizErr := h.postService.Delete(c.Request.Context(), service.DeletePostRequest{
+		UserID: userID,
+		PostID: postID,
+	})
+	if bizErr != nil {
+		response.Fail(c, httpStatusFromError(bizErr), bizErr)
+		return
+	}
+
+	response.Success(c, http.StatusOK, result)
+}
+
 func (h *PostHandler) GetByID(c *gin.Context) {
 	postID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil || postID <= 0 {

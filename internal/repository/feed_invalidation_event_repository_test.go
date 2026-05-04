@@ -118,6 +118,32 @@ func TestDecodeFeedInvalidationEvent(t *testing.T) {
 	}
 }
 
+func TestIsSupportedFeedInvalidationEventType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		eventType string
+		want      bool
+	}{
+		{name: "post created", eventType: FeedInvalidationEventTypePostCreated, want: true},
+		{name: "post deleted", eventType: FeedInvalidationEventTypePostDeleted, want: true},
+		{name: "unknown", eventType: "post_updated", want: false},
+		{name: "empty", eventType: "", want: false},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isSupportedFeedInvalidationEventType(tc.eventType); got != tc.want {
+				t.Fatalf("unexpected supported event result: got=%v want=%v type=%q", got, tc.want, tc.eventType)
+			}
+		})
+	}
+}
+
 func TestWithConsumerConfig(t *testing.T) {
 	t.Parallel()
 

@@ -41,6 +41,7 @@ func RegisterRoutes(
 		{
 			postGroup.GET("/:id", postHandler.GetByID)
 			postGroup.POST("", authMiddleware, postHandler.Create)
+			postGroup.DELETE("/:id", authMiddleware, postHandler.Delete)
 		}
 
 		followGroup := apiV1.Group("/follows")

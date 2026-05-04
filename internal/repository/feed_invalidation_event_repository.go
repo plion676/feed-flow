@@ -17,6 +17,11 @@ const feedInvalidationStreamKey = "feed:invalidation:events"
 const defaultFeedInvalidationDLQStreamKey = "feed:invalidation:dlq"
 
 const (
+	FeedInvalidationEventTypePostCreated = "post_created"
+	FeedInvalidationEventTypePostDeleted = "post_deleted"
+)
+
+const (
 	defaultFeedInvalidationGroupName = "feed-invalidation-group"
 	defaultFeedInvalidationCount     = 20
 	defaultFeedInvalidationBlock     = 2 * time.Second
@@ -161,12 +166,23 @@ func (r *FeedInvalidationEventRepository) PublishPostCreated(ctx context.Context
 }
 
 func (r *FeedInvalidationEventRepository) PublishPostCreatedEvent(ctx context.Context, authorUserID int64, postID int64) error {
+	return r.publishPostEvent(ctx, FeedInvalidationEventTypePostCreated, authorUserID, postID)
+}
+
+func (r *FeedInvalidationEventRepository) PublishPostDeletedEvent(ctx context.Context, authorUserID int64, postID int64) error {
+	return r.publishPostEvent(ctx, FeedInvalidationEventTypePostDeleted, authorUserID, postID)
+}
+
+func (r *FeedInvalidationEventRepository) publishPostEvent(ctx context.Context, eventType string, authorUserID int64, postID int64) error {
 	if authorUserID <= 0 {
 		return fmt.Errorf("author user id must be positive")
 	}
+	if strings.TrimSpace(eventType) == "" {
+		return fmt.Errorf("feed invalidation event type cannot be empty")
+	}
 
 	event := FeedInvalidationEvent{
-		Type:       "post_created",
+		Type:       eventType,
 		AuthorID:   authorUserID,
 		PostID:     postID,
 		OccurredAt: time.Now().Unix(),
@@ -365,7 +381,7 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 		} else {
 			event = decodedEvent
 			event.StreamID = msg.ID
-			if event.Type != "post_created" || event.AuthorID <= 0 {
+			if !isSupportedFeedInvalidationEventType(event.Type) || event.AuthorID <= 0 {
 				// Unknown type/invalid payload: ack and skip.
 				shouldAck = true
 				r.logFeedEventf("skip_invalid", readSource, msg.ID, event, "type=%s", event.Type)
@@ -398,6 +414,15 @@ func (r *FeedInvalidationEventRepository) handleMessages(
 		}
 	}
 	return nil
+}
+
+func isSupportedFeedInvalidationEventType(eventType string) bool {
+	switch eventType {
+	case FeedInvalidationEventTypePostCreated, FeedInvalidationEventTypePostDeleted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *FeedInvalidationEventRepository) handleHandlerFailure(

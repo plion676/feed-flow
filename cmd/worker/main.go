@@ -67,12 +67,20 @@ func main() {
 	backoff := retryCfg.InitialBackoff
 	for {
 		err = eventRepo.ConsumePostCreatedEvents(ctx, func(ctx context.Context, event repository.FeedInvalidationEvent) error {
-			return worker.HandlePostCreatedEvent(ctx, service.PostCreatedEvent{
+			workerEvent := service.PostLifecycleEvent{
 				StreamID:     event.StreamID,
 				AuthorUserID: event.AuthorID,
 				PostID:       event.PostID,
 				OccurredAt:   event.OccurredAt,
-			})
+			}
+			switch event.Type {
+			case repository.FeedInvalidationEventTypePostCreated:
+				return worker.HandlePostCreatedEvent(ctx, workerEvent)
+			case repository.FeedInvalidationEventTypePostDeleted:
+				return worker.HandlePostDeletedEvent(ctx, workerEvent)
+			default:
+				return nil
+			}
 		})
 		if err == nil || errors.Is(err, context.Canceled) {
 			break
