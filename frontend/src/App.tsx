@@ -1,15 +1,12 @@
 import { useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react'
 import {
-  Alert,
   Avatar,
   Button,
   Drawer,
   Empty,
   Form,
   Input,
-  InputNumber,
   Modal,
-  Segmented,
   Space,
   Spin,
   Tag,
@@ -37,14 +34,17 @@ import { api, explainError } from './api'
 import type {
   FeedItem,
   FeedResponse,
+  CommentListResponse,
+  CommentResponse,
   LoginResponse,
   MeResponse,
+  PostInteraction,
   UserFollowListResponse,
   UserPostsResponse,
   UserProfileResponse,
 } from './types'
 
-const { Paragraph, Text, Title } = Typography
+const { Text, Title } = Typography
 
 type Session = {
   key: string
@@ -80,6 +80,15 @@ type FollowListKind = 'followers' | 'following'
 type NoteInteractionState = {
   liked: boolean
   collected: boolean
+  likeCount: number
+  collectCount: number
+  commentCount: number
+}
+
+type CommentListState = {
+  items: CommentResponse[]
+  nextCursor: number
+  hasMore: boolean
 }
 
 type AuthorPostsState = {
@@ -100,11 +109,11 @@ const beijingTimeZone = 'Asia/Shanghai'
 const defaultFeedLimit = 12
 const defaultAuthorPostsLimit = 9
 const defaultFollowListLimit = 8
+const defaultCommentLimit = 10
 const storageKeys = {
   sessions: 'feed-flow-notes:sessions',
   activeSessionKey: 'feed-flow-notes:active-session-key',
   feedMode: 'feed-flow-notes:feed-mode',
-  noteInteractions: 'feed-flow-notes:note-interactions',
 }
 const emptyFeedState: FeedState = {
   items: [],
@@ -119,6 +128,11 @@ const emptyAuthorPostsState: AuthorPostsState = {
 const emptyFollowListState: FollowListState = {
   kind: 'followers',
   open: false,
+  items: [],
+  nextCursor: 0,
+  hasMore: false,
+}
+const emptyCommentListState: CommentListState = {
   items: [],
   nextCursor: 0,
   hasMore: false,
@@ -230,10 +244,6 @@ function formatCount(value: number): string {
   return String(value)
 }
 
-function buildFeedScore(item: FeedCard): number {
-  return item.likeCount * 3 + item.collectCount * 4 + item.commentCount * 5 + (item.post_id % 17)
-}
-
 function mapFeedItems(items: FeedItem[]): FeedCard[] {
   return items.map((item, index) => {
     const [coverColor, accentColor] = buildCoverPalette(item.post_id)
@@ -264,26 +274,6 @@ function mergeFeedState(prev: FeedCard[], next: FeedItem[]): FeedCard[] {
   return Array.from(seen.values()).sort((a, b) => b.post_id - a.post_id)
 }
 
-function splitColumns(items: FeedCard[]) {
-  const left: FeedCard[] = []
-  const right: FeedCard[] = []
-  let leftHeight = 0
-  let rightHeight = 0
-
-  for (const item of items) {
-    const estimate = item.coverHeight + Math.ceil(item.noteText.length / 18) * 9 + 216
-    if (leftHeight <= rightHeight) {
-      left.push(item)
-      leftHeight += estimate
-    } else {
-      right.push(item)
-      rightHeight += estimate
-    }
-  }
-
-  return [left, right] as const
-}
-
 function loadStorageValue<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') {
     return fallback
@@ -311,26 +301,26 @@ function App() {
   const [feedMode, setFeedMode] = useState<FeedMode>(() =>
     loadStorageValue<FeedMode>(storageKeys.feedMode, 'following'),
   )
-  const [searchText, setSearchText] = useState('')
+  const [authorSearchText, setAuthorSearchText] = useState('')
   const [loadingFeed, setLoadingFeed] = useState(false)
   const [busyAction, setBusyAction] = useState(false)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [showCreateDrawer, setShowCreateDrawer] = useState(false)
   const [selectedPostID, setSelectedPostID] = useState<number>()
   const [selectedAuthorID, setSelectedAuthorID] = useState<number>()
-  const [noteInteractions, setNoteInteractions] = useState<Record<number, NoteInteractionState>>(() =>
-    loadStorageValue<Record<number, NoteInteractionState>>(storageKeys.noteInteractions, {}),
-  )
+  const [postInteractions, setPostInteractions] = useState<Record<number, NoteInteractionState>>({})
   const [mobileTab, setMobileTab] = useState<MobileTab>('feed')
-  const [lastResult, setLastResult] = useState('')
+  const [, setLastResult] = useState('')
   const [meProfile, setMeProfile] = useState<MeResponse>()
   const [authorProfiles, setAuthorProfiles] = useState<Record<number, UserProfileResponse>>({})
   const [authorPostsState, setAuthorPostsState] = useState<AuthorPostsState>(emptyAuthorPostsState)
   const [loadingAuthorProfile, setLoadingAuthorProfile] = useState(false)
   const [loadingAuthorPosts, setLoadingAuthorPosts] = useState(false)
-  const [quickAuthorForm] = Form.useForm<{ user_id: number }>()
   const [followListState, setFollowListState] = useState<FollowListState>(emptyFollowListState)
   const [loadingFollowList, setLoadingFollowList] = useState(false)
+  const [commentListState, setCommentListState] = useState<CommentListState>(emptyCommentListState)
+  const [loadingComments, setLoadingComments] = useState(false)
+  const [commentForm] = Form.useForm<{ content: string }>()
   const [msgApi, contextHolder] = message.useMessage()
 
   const activeSession = useMemo(
@@ -348,34 +338,9 @@ function App() {
     [authorProfiles, selectedAuthorID],
   )
 
-  const filteredItems = useMemo(() => {
-    const keyword = searchText.trim().toLowerCase()
-    if (!keyword) {
-      return feedState.items
-    }
-    return feedState.items.filter((item) => {
-      return (
-        item.content.toLowerCase().includes(keyword) ||
-        item.noteText.toLowerCase().includes(keyword) ||
-        String(item.user_id).includes(keyword)
-      )
-    })
-  }, [feedState.items, searchText])
-
   const displayItems = useMemo(() => {
-    if (feedMode === 'following') {
-      return filteredItems
-    }
-    return [...filteredItems].sort((a, b) => {
-      const scoreDiff = buildFeedScore(b) - buildFeedScore(a)
-      if (scoreDiff !== 0) {
-        return scoreDiff
-      }
-      return b.post_id - a.post_id
-    })
-  }, [feedMode, filteredItems])
-
-  const [leftColumn, rightColumn] = useMemo(() => splitColumns(displayItems), [displayItems])
+    return feedState.items
+  }, [feedState.items])
 
   const detailRecommendations = useMemo(() => {
     if (!selectedCard) {
@@ -422,13 +387,6 @@ function App() {
     }
     window.localStorage.setItem(storageKeys.feedMode, JSON.stringify(feedMode))
   }, [feedMode])
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-    window.localStorage.setItem(storageKeys.noteInteractions, JSON.stringify(noteInteractions))
-  }, [noteInteractions])
 
   useEffect(() => {
     if (!activeSession?.token) {
@@ -500,6 +458,49 @@ function App() {
     }
   }, [feedState.items, authorProfiles, activeSession?.token])
 
+  useEffect(() => {
+    const missingAuthorIDs = Array.from(new Set(commentListState.items.map((item) => item.user_id))).filter(
+      (authorID) => !authorProfiles[authorID],
+    )
+    if (missingAuthorIDs.length === 0) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      const results = await Promise.all(
+        missingAuthorIDs.map(async (authorID) => {
+          try {
+            const res = await api.getUserProfile(authorID, activeSession?.token)
+            return res.data.data
+          } catch {
+            return undefined
+          }
+        }),
+      )
+      if (cancelled) {
+        return
+      }
+
+      const nextProfiles: Record<number, UserProfileResponse> = {}
+      for (const profile of results) {
+        if (profile) {
+          nextProfiles[profile.user_id] = profile
+        }
+      }
+      if (Object.keys(nextProfiles).length > 0) {
+        setAuthorProfiles((prev) => ({
+          ...prev,
+          ...nextProfiles,
+        }))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [commentListState.items, authorProfiles, activeSession?.token])
+
   const saveResult = (title: string, payload: unknown) => {
     setLastResult(`${title}\n${JSON.stringify(payload, null, 2)}`)
   }
@@ -543,23 +544,67 @@ function App() {
   }
 
   const applyFeedResponse = (response: FeedResponse, append: boolean) => {
+    const mappedItems = mapFeedItems(response.items)
     setFeedState((prev) => ({
-      items: append ? mergeFeedState(prev.items, response.items) : mapFeedItems(response.items),
+      items: append ? mergeFeedState(prev.items, response.items) : mappedItems,
       nextCursor: response.next_cursor,
       nextCursorToken: response.next_cursor_token,
       hasMore: response.has_more,
     }))
+    void syncPostInteractions(response.items.map((item) => item.post_id))
   }
 
   const getInteractionState = (postID: number): NoteInteractionState => {
-    return noteInteractions[postID] ?? {
+    return postInteractions[postID] ?? buildFallbackInteraction(postID)
+  }
+
+  const buildFallbackInteraction = (postID: number): NoteInteractionState => {
+    const card =
+      feedState.items.find((item) => item.post_id === postID) ||
+      authorPostsState.items.find((item) => item.post_id === postID)
+    return {
       liked: false,
       collected: false,
+      likeCount: card?.likeCount ?? 0,
+      collectCount: card?.collectCount ?? 0,
+      commentCount: card?.commentCount ?? 0,
+    }
+  }
+
+  const applyPostInteraction = (item: PostInteraction) => {
+    setPostInteractions((prev) => ({
+      ...prev,
+      [item.post_id]: {
+        liked: item.liked,
+        collected: item.collected,
+        likeCount: item.like_count,
+        collectCount: item.collect_count,
+        commentCount: item.comment_count,
+      },
+    }))
+  }
+
+  const syncPostInteractions = async (postIDs: number[]) => {
+    const uniqueIDs = Array.from(new Set(postIDs.filter((postID) => postID > 0)))
+    if (uniqueIDs.length === 0) {
+      return
+    }
+    try {
+      const res = await api.getPostInteractionStatuses(uniqueIDs, activeSession?.token)
+      for (const item of res.data.data?.items ?? []) {
+        applyPostInteraction(item)
+      }
+      saveResult('posts/interactions/status', res.data)
+    } catch {
+      // Interaction status is additive UI data; feed rendering should survive failures.
     }
   }
 
   const openNoteDetail = (item: FeedCard) => {
     setSelectedPostID(item.post_id)
+    setCommentListState(emptyCommentListState)
+    void syncPostInteractions([item.post_id])
+    void loadComments(item.post_id, false)
   }
 
   const closeNoteDetail = () => {
@@ -582,22 +627,6 @@ function App() {
     setAuthorPostsState(emptyAuthorPostsState)
   }
 
-  const toggleInteraction = (postID: number, field: keyof NoteInteractionState) => {
-    setNoteInteractions((prev) => {
-      const current = prev[postID] ?? {
-        liked: false,
-        collected: false,
-      }
-      return {
-        ...prev,
-        [postID]: {
-          ...current,
-          [field]: !current[field],
-        },
-      }
-    })
-  }
-
   const onCardKeyDown = (event: KeyboardEvent<HTMLElement>, item: FeedCard) => {
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault()
@@ -605,14 +634,38 @@ function App() {
     }
   }
 
-  const onLikeClick = (event: MouseEvent<HTMLButtonElement>, postID: number) => {
+  const onLikeClick = async (event: MouseEvent<HTMLButtonElement>, postID: number) => {
     event.stopPropagation()
-    toggleInteraction(postID, 'liked')
+    const token = requireToken()
+    if (!token) return
+
+    try {
+      const current = getInteractionState(postID)
+      const res = current.liked ? await api.unlikePost(postID, token) : await api.likePost(postID, token)
+      if (res.data.data) {
+        applyPostInteraction(res.data.data)
+      }
+      saveResult(current.liked ? 'post/unlike' : 'post/like', res.data)
+    } catch (err) {
+      msgApi.error(explainError(err))
+    }
   }
 
-  const onCollectClick = (event: MouseEvent<HTMLButtonElement>, postID: number) => {
+  const onCollectClick = async (event: MouseEvent<HTMLButtonElement>, postID: number) => {
     event.stopPropagation()
-    toggleInteraction(postID, 'collected')
+    const token = requireToken()
+    if (!token) return
+
+    try {
+      const current = getInteractionState(postID)
+      const res = current.collected ? await api.uncollectPost(postID, token) : await api.collectPost(postID, token)
+      if (res.data.data) {
+        applyPostInteraction(res.data.data)
+      }
+      saveResult(current.collected ? 'post/uncollect' : 'post/collect', res.data)
+    } catch (err) {
+      msgApi.error(explainError(err))
+    }
   }
 
   const onCommentClick = (event: MouseEvent<HTMLButtonElement>, item: FeedCard) => {
@@ -668,6 +721,7 @@ function App() {
       nextCursor: response.next_cursor,
       hasMore: response.has_more,
     }))
+    void syncPostInteractions(response.items.map((item) => item.post_id))
   }
 
   const loadAuthorPosts = async (authorID: number, append: boolean) => {
@@ -689,6 +743,55 @@ function App() {
     } finally {
       setLoadingAuthorPosts(false)
     }
+  }
+
+  const applyCommentListResponse = (response: CommentListResponse, append: boolean) => {
+    setCommentListState((prev) => ({
+      items: append ? [...prev.items, ...response.items] : response.items,
+      nextCursor: response.next_cursor,
+      hasMore: response.has_more,
+    }))
+  }
+
+  const loadComments = async (postID: number, append: boolean) => {
+    setLoadingComments(true)
+    try {
+      const res = await api.getPostComments(postID, {
+        limit: defaultCommentLimit,
+        ...(append && commentListState.nextCursor > 0 ? { lastCommentID: commentListState.nextCursor } : {}),
+      })
+      if (res.data.data) {
+        applyCommentListResponse(res.data.data, append)
+      }
+      saveResult(append ? 'comments/load-more' : 'comments/list', res.data)
+    } catch (err) {
+      msgApi.error(explainError(err))
+    } finally {
+      setLoadingComments(false)
+    }
+  }
+
+  const onCreateComment = async (values: { content: string }) => {
+    if (!selectedCard) {
+      return
+    }
+    const token = requireToken()
+    if (!token) return
+
+    await withBusyAction(async () => {
+      try {
+        const res = await api.createPostComment(selectedCard.post_id, { content: values.content }, token)
+        saveResult('comments/create', res.data)
+        commentForm.resetFields()
+        await Promise.all([
+          loadComments(selectedCard.post_id, false),
+          syncPostInteractions([selectedCard.post_id]),
+        ])
+        msgApi.success('评论已发布')
+      } catch (err) {
+        msgApi.error(explainError(err))
+      }
+    })
   }
 
   const openAuthorProfile = async (authorID: number) => {
@@ -777,16 +880,22 @@ function App() {
 
     setLoadingFeed(true)
     try {
-      const res = await api.getFeed(token, {
-        limit: defaultFeedLimit,
-        ...(append
-          ? feedState.nextCursorToken
-            ? { cursor: feedState.nextCursorToken }
-            : { lastPostID: feedState.nextCursor }
-          : manualRefresh
-            ? { refresh: true }
-            : {}),
-      })
+      const res =
+        feedMode === 'discover'
+          ? await api.getDiscoverFeed(token, {
+              limit: defaultFeedLimit,
+              ...(append && feedState.nextCursor > 0 ? { lastPostID: feedState.nextCursor } : {}),
+            })
+          : await api.getFeed(token, {
+              limit: defaultFeedLimit,
+              ...(append
+                ? feedState.nextCursorToken
+                  ? { cursor: feedState.nextCursorToken }
+                  : { lastPostID: feedState.nextCursor }
+                : manualRefresh
+                  ? { refresh: true }
+                  : {}),
+            })
       const payload = res.data.data
       if (payload) {
         applyFeedResponse(payload, append)
@@ -794,15 +903,36 @@ function App() {
           msgApi.info('暂无更多新内容，已为你展示最近内容')
         }
       }
-      saveResult(append ? 'feed/load-more' : 'feed/refresh', res.data)
+      const feedLabel = feedMode === 'discover' ? 'feed/discover' : 'feed'
+      saveResult(append ? `${feedLabel}/load-more` : `${feedLabel}/refresh`, res.data)
       if (!append && !silent) {
-        msgApi.success('首页已刷新')
+        msgApi.success(feedMode === 'discover' ? '发现页已刷新' : '首页已刷新')
       }
     } catch (err) {
       msgApi.error(explainError(err))
     } finally {
       setLoadingFeed(false)
     }
+  }
+
+  useEffect(() => {
+    if (!activeSession?.token) {
+      return
+    }
+
+    void loadFeed({ append: false, silent: true })
+    // loadFeed intentionally stays outside deps; this effect is keyed by the feed source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSession?.token, feedMode])
+
+  const switchFeedMode = async (nextMode: FeedMode) => {
+    setMobileTab('feed')
+    setFeedState(emptyFeedState)
+    if (nextMode === feedMode) {
+      await loadFeed({ append: false, silent: true })
+      return
+    }
+    setFeedMode(nextMode)
   }
 
   const onRegister = async (values: {
@@ -895,24 +1025,6 @@ function App() {
     })
   }
 
-  const onGetMe = async () => {
-    const token = requireToken()
-    if (!token) return
-
-    await withBusyAction(async () => {
-      try {
-        const res = await api.me(token)
-        saveResult('users/me', res.data)
-        if (res.data.data) {
-          setMeProfile(res.data.data)
-        }
-        msgApi.success('账号信息已同步')
-      } catch (err) {
-        msgApi.error(explainError(err))
-      }
-    })
-  }
-
   const performDeletePost = async (postID: number, authorUserID: number) => {
     const token = requireToken()
     if (!token) return
@@ -962,8 +1074,15 @@ function App() {
     })
   }
 
-  const onOpenQuickAuthor = async (values: { user_id: number }) => {
-    await openAuthorProfile(values.user_id)
+  const onSearchAuthor = async () => {
+    const raw = authorSearchText.trim()
+    const authorID = Number(raw)
+    if (!raw || !Number.isInteger(authorID) || authorID <= 0) {
+      msgApi.warning('请输入有效的用户 ID')
+      return
+    }
+
+    await openAuthorProfile(authorID)
   }
 
   const emptyState = !loadingFeed && displayItems.length === 0
@@ -972,11 +1091,11 @@ function App() {
   const canDeleteSelectedPost = Boolean(
     activeSession && selectedCard && activeSession.userID === selectedCard.user_id,
   )
+  const selectedInteraction = selectedCard ? getInteractionState(selectedCard.post_id) : undefined
 
   const renderNoteCard = (item: FeedCard, variant: 'warm' | 'cool') => {
     const interaction = getInteractionState(item.post_id)
-    const displayedLikeCount = item.likeCount + (interaction.liked ? 1 : 0)
-    const displayedCollectCount = item.collectCount + (interaction.collected ? 1 : 0)
+    const displayedLikeCount = interaction.likeCount
     const coverBackground =
       variant === 'warm'
         ? `linear-gradient(145deg, ${item.coverColor}, ${item.accentColor})`
@@ -1081,33 +1200,6 @@ function App() {
               {interaction.liked ? <HeartFilled /> : <HeartOutlined />}
               <span>{formatCount(displayedLikeCount)}</span>
             </button>
-
-            <button
-              type="button"
-              className={`note-action-btn ${interaction.collected ? 'active' : ''}`}
-              onClick={(event) => onCollectClick(event, item.post_id)}
-            >
-              {interaction.collected ? <StarFilled /> : <StarOutlined />}
-              <span>{formatCount(displayedCollectCount)}</span>
-            </button>
-
-            <button
-              type="button"
-              className="note-action-btn"
-              onClick={(event) => onCommentClick(event, item)}
-            >
-              <MessageOutlined />
-              <span>{formatCount(item.commentCount)}</span>
-            </button>
-
-            <button
-              type="button"
-              className="note-action-btn note-action-link"
-              onClick={(event) => void onShareClick(event, item)}
-            >
-              <ShareAltOutlined />
-              <span>分享</span>
-            </button>
           </div>
         </div>
       </article>
@@ -1120,188 +1212,88 @@ function App() {
 
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark">FF</div>
-          <div>
-            <div className="brand-title">Feed Flow Notes</div>
-            <div className="brand-subtitle">青春版内容社区 · 信息流演示</div>
-          </div>
+          <div className="brand-mark">FeedFlow</div>
+        </div>
+
+        <div className="search-box">
+          <input
+            value={authorSearchText}
+            onChange={(event) => setAuthorSearchText(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void onSearchAuthor()
+              }
+            }}
+            inputMode="numeric"
+            placeholder="搜索用户 ID"
+          />
+          <button
+            type="button"
+            className="search-submit-btn"
+            onClick={() => void onSearchAuthor()}
+            disabled={loadingAuthorProfile || loadingAuthorPosts}
+            aria-label="查看用户卡片"
+          >
+            <SearchOutlined />
+          </button>
         </div>
 
         <div className="topbar-actions">
-          <div className="search-box">
-            <SearchOutlined />
-            <input
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              placeholder="搜索文案 / 作者 ID"
-            />
-          </div>
-
-          <Button
-            className="ghost-btn"
-            icon={<ReloadOutlined />}
-            onClick={() => void loadFeed({ append: false, manualRefresh: true })}
-            loading={loadingFeed}
-          >
-            刷新
-          </Button>
-
-          <Button
-            type="primary"
-            className="create-btn"
-            icon={<PlusOutlined />}
-            onClick={() => setShowCreateDrawer(true)}
-          >
-            发布
-          </Button>
+          <button type="button" className="topbar-link" onClick={() => setShowCreateDrawer(true)}>
+            创作中心
+          </button>
+          <button type="button" className="topbar-link" onClick={() => setShowAuthModal(true)}>
+            账号管理
+          </button>
         </div>
       </header>
 
       <main className="layout-grid">
         <aside className={`left-panel ${showLeftPanelOnMobile ? 'mobile-visible' : 'mobile-hidden'}`}>
-          <section className="panel-card profile-card">
-            <div className="profile-head">
-              <button
-                type="button"
-                className="profile-avatar-btn"
-                disabled={!activeSession}
-                onClick={() => {
-                  if (activeSession) {
-                    void openAuthorProfile(activeSession.userID)
-                  }
-                }}
-              >
-                <Avatar size={54} src={meProfile?.avatar || undefined} icon={<UserOutlined />} />
-              </button>
-              <div>
-                <div className="panel-kicker">当前账号</div>
-                {activeSession ? (
-                  <button
-                    type="button"
-                    className="profile-name-btn"
-                    onClick={() => void openAuthorProfile(activeSession.userID)}
-                  >
-                    {meProfile?.nickname ?? activeSession.nickname}
-                  </button>
-                ) : (
-                  <div className="profile-name">还没有登录</div>
-                )}
-                <Text className="muted-text">
-                  {activeSession
-                    ? `@${meProfile?.username ?? activeSession.username} · user_id=${activeSession.userID}`
-                    : '登录后即可发帖、关注和拉取 feed'}
-                </Text>
-                {meProfile?.bio ? <div className="profile-bio">{meProfile.bio}</div> : null}
-              </div>
-            </div>
+          <nav className="side-nav" aria-label="主要导航">
+            <button
+              type="button"
+              className={`side-nav-item ${feedMode === 'discover' ? 'active' : ''}`}
+              onClick={() => void switchFeedMode('discover')}
+            >
+              <HomeOutlined />
+              <span>发现</span>
+            </button>
+            <button
+              type="button"
+              className={`side-nav-item ${feedMode === 'following' ? 'active' : ''}`}
+              onClick={() => void switchFeedMode('following')}
+            >
+              <TeamOutlined />
+              <span>关注</span>
+            </button>
+            <button type="button" className="side-nav-item" onClick={() => setShowCreateDrawer(true)}>
+              <PlusOutlined />
+              <span>发布</span>
+            </button>
+            <button
+              type="button"
+              className="side-nav-item"
+              onClick={() => {
+                if (activeSession) {
+                  void openAuthorProfile(activeSession.userID)
+                } else {
+                  setShowAuthModal(true)
+                }
+              }}
+            >
+              <UserOutlined />
+              <span>我</span>
+            </button>
+          </nav>
 
-            {activeSession ? (
-              <div className="profile-stat-row">
-                <div className="profile-stat-chip">
-                  <span>身份</span>
-                  <strong>{activeSession.userID}</strong>
-                </div>
-                <div className="profile-stat-chip">
-                  <span>昵称</span>
-                  <strong>{meProfile?.nickname ?? activeSession.nickname}</strong>
-                </div>
-              </div>
-            ) : null}
+          <div className="side-spacer" />
 
-            <div className="session-list">
-              {sessions.length === 0 ? (
-                <Button block onClick={() => setShowAuthModal(true)}>
-                  登录 / 注册
-                </Button>
-              ) : (
-                sessions.map((session) => (
-                  <button
-                    key={session.key}
-                    className={`session-pill ${session.key === activeSessionKey ? 'active' : ''}`}
-                    onClick={() => setActiveSessionKey(session.key)}
-                  >
-                    <span>{session.nickname}</span>
-                    <span className="session-meta">@{session.username}</span>
-                  </button>
-                ))
-              )}
-            </div>
-
-            <Space wrap>
-              <Button onClick={onGetMe} disabled={!activeSession} loading={busyAction}>
-                同步我的资料
-              </Button>
-              <Button onClick={() => setShowAuthModal(true)}>管理账号</Button>
-            </Space>
-          </section>
-
-          <section className="panel-card trend-card">
-            <div className="panel-head">
-              <span className="panel-kicker">发现灵感</span>
-              <Segmented<FeedMode>
-                value={feedMode}
-                onChange={(value) => setFeedMode(value)}
-                options={[
-                  { label: '关注流', value: 'following', icon: <HomeOutlined /> },
-                  { label: '探索感', value: 'discover', icon: <FireOutlined /> },
-                ]}
-              />
-            </div>
-            <Paragraph className="panel-copy">
-              当前后端提供的是关注 feed。这里的“探索感”先只做前端展示层切换，用不同文案氛围和卡片排序观感去模拟内容社区的产品态。
-            </Paragraph>
-            <Alert
-              type="warning"
-              showIcon
-              message="当前是后端 Feed 演示版"
-              description="还没有推荐召回，但我们已经把登录、关注、发帖、混排、曝光去重这条主链路接起来了。"
-            />
-          </section>
-
-          <section className="panel-card follow-card">
-            <div className="panel-head">
-              <span className="panel-kicker">快速关注</span>
-            </div>
-            <Form layout="vertical" onFinish={onFollow}>
-              <Form.Item
-                name="target_user_id"
-                label="目标用户 ID"
-                rules={[{ required: true, message: '填一个用户 ID' }]}
-              >
-                <InputNumber min={1} placeholder="例如 2" style={{ width: '100%' }} />
-              </Form.Item>
-              <Button
-                htmlType="submit"
-                type="primary"
-                icon={<UserAddOutlined />}
-                block
-                loading={busyAction}
-              >
-                关注这个作者
-              </Button>
-            </Form>
-          </section>
-
-          <section className="panel-card author-jump-card">
-            <div className="panel-head">
-              <span className="panel-kicker">作者主页</span>
-            </div>
-            <Paragraph className="panel-copy">
-              输入任意用户 ID，快速查看对方主页、作品、关注和粉丝。
-            </Paragraph>
-            <Form form={quickAuthorForm} layout="vertical" onFinish={onOpenQuickAuthor}>
-              <Form.Item
-                name="user_id"
-                label="作者用户 ID"
-                rules={[{ required: true, message: '填一个作者 ID' }]}
-              >
-                <InputNumber min={1} placeholder="例如 1 / 2 / 1001" style={{ width: '100%' }} />
-              </Form.Item>
-              <Button htmlType="submit" block loading={loadingAuthorProfile || loadingAuthorPosts}>
-                查看该作者主页
-              </Button>
-            </Form>
-          </section>
+          <button type="button" className="side-nav-item more-item" onClick={() => setShowAuthModal(true)}>
+            <UserAddOutlined />
+            <span>{activeSession ? meProfile?.nickname ?? activeSession.nickname : '登录'}</span>
+          </button>
         </aside>
 
         <section className={`feed-stage ${showFeedStageOnMobile ? 'mobile-visible' : 'mobile-hidden'}`}>
@@ -1316,11 +1308,15 @@ function App() {
                   : '先登录账号，再体验发帖和刷 feed'}
               </Text>
             </div>
-            <Space wrap>
-              <Tag color="magenta">items {feedState.items.length}</Tag>
-              <Tag color="blue">next {feedState.nextCursor}</Tag>
-              <Tag color="orange">has_more {String(feedState.hasMore)}</Tag>
-            </Space>
+            <button
+              type="button"
+              className="feed-refresh-btn"
+              onClick={() => void loadFeed({ append: false, manualRefresh: true })}
+              disabled={loadingFeed}
+            >
+              <ReloadOutlined />
+              <span>刷新</span>
+            </button>
           </div>
 
           {loadingFeed && feedState.items.length === 0 ? (
@@ -1347,9 +1343,7 @@ function App() {
           ) : (
             <>
               <div className="masonry-grid">
-                <div className="masonry-column">{leftColumn.map((item) => renderNoteCard(item, 'warm'))}</div>
-
-                <div className="masonry-column">{rightColumn.map((item) => renderNoteCard(item, 'cool'))}</div>
+                {displayItems.map((item, index) => renderNoteCard(item, index % 2 === 0 ? 'warm' : 'cool'))}
               </div>
 
               <div className="feed-footer">
@@ -1367,27 +1361,6 @@ function App() {
           )}
         </section>
 
-        <aside className={`right-panel ${showLeftPanelOnMobile ? 'mobile-visible' : 'mobile-hidden'}`}>
-          <section className="panel-card result-card">
-            <div className="panel-head">
-              <span className="panel-kicker">接口回显</span>
-            </div>
-            <pre className="result-block">{lastResult || '这里会展示最近一次接口响应。'}</pre>
-          </section>
-
-          <section className="panel-card guide-card">
-            <div className="panel-head">
-              <span className="panel-kicker">演示顺序</span>
-            </div>
-            <ol className="guide-list">
-              <li>注册两个账号，例如 `alice` 和 `bob`。</li>
-              <li>切到 `bob`，先关注 `alice`。</li>
-              <li>切回 `alice`，发几条帖子。</li>
-              <li>回到 `bob`，点击刷新，观察关注 feed 的混排结果。</li>
-              <li>点击任一卡片，查看详情页和前端交互层。</li>
-            </ol>
-          </section>
-        </aside>
       </main>
 
       <Modal
@@ -1484,10 +1457,10 @@ function App() {
         <button
           type="button"
           className={`mobile-nav-btn ${mobileTab === 'feed' ? 'active' : ''}`}
-          onClick={() => setMobileTab('feed')}
+          onClick={() => void switchFeedMode('discover')}
         >
           <HomeOutlined />
-          <span>首页</span>
+          <span>发现</span>
         </button>
 
         <button
@@ -1596,7 +1569,7 @@ function App() {
                 >
                   {getInteractionState(selectedCard.post_id).liked ? <HeartFilled /> : <HeartOutlined />}
                   <span>
-                    喜欢 {formatCount(selectedCard.likeCount + (getInteractionState(selectedCard.post_id).liked ? 1 : 0))}
+                    喜欢 {formatCount(selectedInteraction?.likeCount ?? selectedCard.likeCount)}
                   </span>
                 </button>
 
@@ -1607,7 +1580,7 @@ function App() {
                 >
                   {getInteractionState(selectedCard.post_id).collected ? <StarFilled /> : <StarOutlined />}
                   <span>
-                    收藏 {formatCount(selectedCard.collectCount + (getInteractionState(selectedCard.post_id).collected ? 1 : 0))}
+                    收藏 {formatCount(selectedInteraction?.collectCount ?? selectedCard.collectCount)}
                   </span>
                 </button>
 
@@ -1617,7 +1590,7 @@ function App() {
                   onClick={(event) => onCommentClick(event, selectedCard)}
                 >
                   <MessageOutlined />
-                  <span>评论 {formatCount(selectedCard.commentCount)}</span>
+                  <span>评论 {formatCount(selectedInteraction?.commentCount ?? selectedCard.commentCount)}</span>
                 </button>
 
                 <button
@@ -1643,15 +1616,15 @@ function App() {
               <div className="detail-stat-grid">
                 <div className="detail-stat-card">
                   <span>喜欢感</span>
-                  <strong>{formatCount(selectedCard.likeCount)}</strong>
+                  <strong>{formatCount(selectedInteraction?.likeCount ?? selectedCard.likeCount)}</strong>
                 </div>
                 <div className="detail-stat-card">
                   <span>收藏感</span>
-                  <strong>{formatCount(selectedCard.collectCount)}</strong>
+                  <strong>{formatCount(selectedInteraction?.collectCount ?? selectedCard.collectCount)}</strong>
                 </div>
                 <div className="detail-stat-card">
                   <span>评论感</span>
-                  <strong>{formatCount(selectedCard.commentCount)}</strong>
+                  <strong>{formatCount(selectedInteraction?.commentCount ?? selectedCard.commentCount)}</strong>
                 </div>
               </div>
 
@@ -1667,13 +1640,60 @@ function App() {
                 )}
               </div>
 
-              <Alert
-                className="detail-alert"
-                type="info"
-                showIcon
-                message="当前详情来自首页 feed 数据展开"
-                description="目前还没有独立的帖子详情接口，所以这里展示的是 feed 已经拿到的内容；这样能先把产品交互跑通。"
-              />
+              <div className="comment-section">
+                <div className="detail-section-title">评论</div>
+                <Form form={commentForm} layout="vertical" onFinish={onCreateComment}>
+                  <Form.Item
+                    name="content"
+                    rules={[{ required: true, min: 1, max: 300, message: '评论长度 1-300' }]}
+                  >
+                    <Input.TextArea rows={3} showCount maxLength={300} placeholder="写下你的评论..." />
+                  </Form.Item>
+                  <Button htmlType="submit" type="primary" loading={busyAction}>
+                    发布评论
+                  </Button>
+                </Form>
+
+                {loadingComments && commentListState.items.length === 0 ? (
+                  <div className="comment-loading">
+                    <Spin />
+                  </div>
+                ) : commentListState.items.length === 0 ? (
+                  <Empty description="还没有评论，来坐第一排。" />
+                ) : (
+                  <div className="comment-list">
+                    {commentListState.items.map((comment) => (
+                      <div className="comment-item" key={`comment-${comment.comment_id}`}>
+                        <Avatar
+                          size={34}
+                          src={authorProfiles[comment.user_id]?.avatar || undefined}
+                          icon={<UserOutlined />}
+                        />
+                        <div className="comment-main">
+                          <button
+                            type="button"
+                            className="comment-author-btn"
+                            onClick={() => void openAuthorProfile(comment.user_id)}
+                          >
+                            {authorProfiles[comment.user_id]?.nickname ?? `用户 #${comment.user_id}`}
+                          </button>
+                          <div className="comment-content">{comment.content}</div>
+                          <div className="comment-time">{formatBeijingDateTime(comment.created_at)}</div>
+                        </div>
+                      </div>
+                    ))}
+                    {commentListState.hasMore ? (
+                      <Button
+                        block
+                        loading={loadingComments}
+                        onClick={() => void loadComments(selectedCard.post_id, true)}
+                      >
+                        查看更多评论
+                      </Button>
+                    ) : null}
+                  </div>
+                )}
+              </div>
 
               {detailRecommendations.length > 0 ? (
                 <div className="detail-recommendations">

@@ -12,6 +12,7 @@ func RegisterRoutes(
 	authHandler *handler.AuthHandler,
 	userHandler *handler.UserHandler,
 	postHandler *handler.PostHandler,
+	postInteractionHandler *handler.PostInteractionHandler,
 	followHandler *handler.FollowHandler,
 	feedHandler *handler.FeedHandler,
 	feedDLQHandler *handler.FeedDLQHandler,
@@ -49,9 +50,20 @@ func RegisterRoutes(
 
 		postGroup := apiV1.Group("/posts")
 		{
+			if postInteractionHandler != nil {
+				postGroup.GET("/interactions/status", optionalAuthMiddleware, postInteractionHandler.GetStatuses)
+			}
 			postGroup.GET("/:id", postHandler.GetByID)
 			postGroup.POST("", authMiddleware, postHandler.Create)
 			postGroup.DELETE("/:id", authMiddleware, postHandler.Delete)
+			if postInteractionHandler != nil {
+				postGroup.POST("/:id/like", authMiddleware, postInteractionHandler.Like)
+				postGroup.DELETE("/:id/like", authMiddleware, postInteractionHandler.Unlike)
+				postGroup.POST("/:id/collect", authMiddleware, postInteractionHandler.Collect)
+				postGroup.DELETE("/:id/collect", authMiddleware, postInteractionHandler.Uncollect)
+				postGroup.GET("/:id/comments", postInteractionHandler.ListComments)
+				postGroup.POST("/:id/comments", authMiddleware, postInteractionHandler.CreateComment)
+			}
 		}
 
 		followGroup := apiV1.Group("/follows")
@@ -65,6 +77,7 @@ func RegisterRoutes(
 		feedGroup.Use(authMiddleware)
 		{
 			feedGroup.GET("", feedHandler.GetHomeFeed)
+			feedGroup.GET("/discover", feedHandler.GetDiscoverFeed)
 			if feedDLQHandler != nil {
 				feedGroup.GET("/dlq", feedDLQHandler.List)
 				feedGroup.POST("/dlq/replay", feedDLQHandler.Replay)

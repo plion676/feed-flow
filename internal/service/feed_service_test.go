@@ -36,6 +36,7 @@ type fakeFeedPostRepo struct {
 
 	gotUserIDs  []int64
 	gotPostIDs  []int64
+	gotListAll  bool
 	gotLastPost int64
 	gotLimit    int
 	calledTimes int
@@ -62,6 +63,38 @@ func (r *fakeFeedPostRepo) ListByUserIDs(_ context.Context, userIDs []int64, las
 		if _, ok := allow[p.UserID]; !ok {
 			continue
 		}
+		if p.Status != 1 {
+			continue
+		}
+		if lastPostID > 0 && p.ID >= lastPostID {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].ID > filtered[j].ID
+	})
+
+	if limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+
+	return filtered, nil
+}
+
+func (r *fakeFeedPostRepo) ListPublished(_ context.Context, lastPostID int64, limit int) ([]*model.Post, error) {
+	r.calledTimes++
+	r.gotListAll = true
+	r.gotLastPost = lastPostID
+	r.gotLimit = limit
+
+	if r.err != nil {
+		return nil, r.err
+	}
+
+	filtered := make([]*model.Post, 0, len(r.posts))
+	for _, p := range r.posts {
 		if p.Status != 1 {
 			continue
 		}
@@ -238,6 +271,49 @@ func containsInt64(nums []int64, target int64) bool {
 		}
 	}
 	return false
+}
+
+func TestFeedServiceGetDiscoverFeed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	postRepo := &fakeFeedPostRepo{
+		posts: []*model.Post{
+			{ID: 12, UserID: 1003, Content: "p12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 1002, Content: "p11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			{ID: 10, UserID: 1001, Content: "p10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+			{ID: 9, UserID: 1004, Content: "p9-hidden", Status: 0, CreatedAt: now.Add(-3 * time.Minute)},
+		},
+	}
+	svc := NewFeedService(&fakeFeedFollowRepo{}, postRepo)
+
+	got, gotErr := svc.GetDiscoverFeed(ctx, GetFeedRequest{
+		UserID:     1001,
+		LastPostID: 12,
+		Limit:      2,
+	})
+	if gotErr != nil {
+		t.Fatalf("unexpected error: %v", gotErr)
+	}
+	if !postRepo.gotListAll {
+		t.Fatal("expected discover feed to list published posts globally")
+	}
+	if postRepo.gotLastPost != 12 || postRepo.gotLimit != 3 {
+		t.Fatalf("unexpected repo args: last_post_id=%d limit=%d", postRepo.gotLastPost, postRepo.gotLimit)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("unexpected item length: got=%d want=%d", len(got.Items), 2)
+	}
+	if got.Items[0].PostID != 11 || got.Items[1].PostID != 10 {
+		t.Fatalf("unexpected discover order: got=%+v", got.Items)
+	}
+	if got.HasMore {
+		t.Fatal("expected has_more=false")
+	}
+	if got.NextCursor != 10 {
+		t.Fatalf("unexpected next cursor: got=%d want=%d", got.NextCursor, 10)
+	}
 }
 
 func TestFeedServiceGetHomeFeed(t *testing.T) {

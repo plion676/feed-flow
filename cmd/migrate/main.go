@@ -28,11 +28,14 @@ func main() {
 		&model.User{},
 		&model.UserCount{},
 		&model.Post{},
+		&model.PostLike{},
+		&model.PostCollect{},
+		&model.PostComment{},
 		&model.Follow{},
 		&model.FeedDLQOperator{},
 	); err != nil {
 		log.Fatalf("auto migrate failed: %v", err)
 	}
 
-	log.Println("migration completed: users, user_counts, posts, follows, feed_dlq_operators")
+	log.Println("migration completed: users, user_counts, posts, post interactions, follows, feed_dlq_operators")
 }

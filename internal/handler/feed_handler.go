@@ -69,3 +69,43 @@ func (h *FeedHandler) GetHomeFeed(c *gin.Context) {
 
 	response.Success(c, http.StatusOK, result)
 }
+
+func (h *FeedHandler) GetDiscoverFeed(c *gin.Context) {
+	userID, ok := middleware.CurrentUserID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, xerror.ErrUnauthorized)
+		return
+	}
+
+	var lastPostID int64
+	if raw := c.Query("last_post_id"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 0 {
+			response.Fail(c, http.StatusBadRequest, xerror.ErrBadRequest)
+			return
+		}
+		lastPostID = parsed
+	}
+
+	var limit int
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			response.Fail(c, http.StatusBadRequest, xerror.ErrBadRequest)
+			return
+		}
+		limit = parsed
+	}
+
+	result, bizErr := h.feedService.GetDiscoverFeed(c.Request.Context(), service.GetFeedRequest{
+		UserID:     userID,
+		LastPostID: lastPostID,
+		Limit:      limit,
+	})
+	if bizErr != nil {
+		response.Fail(c, httpStatusFromError(bizErr), bizErr)
+		return
+	}
+
+	response.Success(c, http.StatusOK, result)
+}

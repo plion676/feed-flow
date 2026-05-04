@@ -3,9 +3,13 @@ import type {
   ApiEnvelope,
   CreatePostRequest,
   FeedResponse,
+  CommentListResponse,
+  CommentResponse,
   LoginRequest,
   LoginResponse,
   MeResponse,
+  PostInteraction,
+  PostInteractionStatusResponse,
   PostResponse,
   RegisterRequest,
   RegisterResponse,
@@ -106,6 +110,54 @@ export const api = {
     )
   },
 
+  likePost(postID: number, token: string) {
+    return client.post<ApiEnvelope<PostInteraction>>(`/posts/${postID}/like`, {}, {
+      headers: authHeader(token),
+    })
+  },
+
+  unlikePost(postID: number, token: string) {
+    return client.delete<ApiEnvelope<PostInteraction>>(`/posts/${postID}/like`, {
+      headers: authHeader(token),
+    })
+  },
+
+  collectPost(postID: number, token: string) {
+    return client.post<ApiEnvelope<PostInteraction>>(`/posts/${postID}/collect`, {}, {
+      headers: authHeader(token),
+    })
+  },
+
+  uncollectPost(postID: number, token: string) {
+    return client.delete<ApiEnvelope<PostInteraction>>(`/posts/${postID}/collect`, {
+      headers: authHeader(token),
+    })
+  },
+
+  getPostInteractionStatuses(postIDs: number[], token?: string) {
+    return client.get<ApiEnvelope<PostInteractionStatusResponse>>('/posts/interactions/status', {
+      headers: authHeader(token),
+      params: {
+        post_ids: postIDs.join(','),
+      },
+    })
+  },
+
+  getPostComments(postID: number, options?: { limit?: number; lastCommentID?: number }) {
+    return client.get<ApiEnvelope<CommentListResponse>>(`/posts/${postID}/comments`, {
+      params: {
+        ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options?.lastCommentID === 'number' ? { last_comment_id: options.lastCommentID } : {}),
+      },
+    })
+  },
+
+  createPostComment(postID: number, payload: { content: string }, token: string) {
+    return client.post<ApiEnvelope<CommentResponse>>(`/posts/${postID}/comments`, payload, {
+      headers: authHeader(token),
+    })
+  },
+
   getFeed(token: string, options?: { limit?: number; lastPostID?: number; cursor?: string; refresh?: boolean }) {
     return client.get<ApiEnvelope<FeedResponse>>('/feed', {
       headers: authHeader(token),
@@ -114,6 +166,16 @@ export const api = {
         ...(typeof options?.lastPostID === 'number' ? { last_post_id: options.lastPostID } : {}),
         ...(options?.cursor ? { cursor: options.cursor } : {}),
         ...(options?.refresh ? { refresh: 1 } : {}),
+      },
+    })
+  },
+
+  getDiscoverFeed(token: string, options?: { limit?: number; lastPostID?: number }) {
+    return client.get<ApiEnvelope<FeedResponse>>('/feed/discover', {
+      headers: authHeader(token),
+      params: {
+        ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options?.lastPostID === 'number' ? { last_post_id: options.lastPostID } : {}),
       },
     })
   },

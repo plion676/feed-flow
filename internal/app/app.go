@@ -48,6 +48,7 @@ func New(cfg *Config) *App {
 	userRepo := repository.NewUserRepository(db)
 	userCountRepo := repository.NewUserCountRepository(db)
 	postRepo := repository.NewPostRepository(db)
+	postInteractionRepo := repository.NewPostInteractionRepository(db)
 	followRepo := repository.NewFollowRepository(db)
 	feedDLQOperatorRepo := repository.NewFeedDLQOperatorRepository(db)
 	var feedCacheRepo *repository.FeedCacheRepository
@@ -75,6 +76,7 @@ func New(cfg *Config) *App {
 		WithPostRepository(postRepo).
 		WithFollowRepository(followRepo)
 	postService := service.NewPostService(postRepo)
+	postInteractionService := service.NewPostInteractionService(postRepo, postInteractionRepo)
 	followService := service.NewFollowService(followRepo, userRepo)
 	feedService := service.NewFeedService(followRepo, postRepo)
 	if feedCacheRepo != nil {
@@ -108,6 +110,7 @@ func New(cfg *Config) *App {
 	authHandler := handler.NewAuthHandler(authService)
 	userHandler := handler.NewUserHandler(userService)
 	postHandler := handler.NewPostHandler(postService)
+	postInteractionHandler := handler.NewPostInteractionHandler(postInteractionService)
 	followHandler := handler.NewFollowHandler(followService)
 	feedHandler := handler.NewFeedHandler(feedService)
 	var feedDLQHandler *handler.FeedDLQHandler
@@ -119,7 +122,7 @@ func New(cfg *Config) *App {
 	authMiddleware := middleware.AuthJWT(jwtManager)
 	optionalAuthMiddleware := middleware.OptionalAuthJWT(jwtManager)
 
-	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, followHandler, feedHandler, feedDLQHandler, authMiddleware, optionalAuthMiddleware)
+	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, postInteractionHandler, followHandler, feedHandler, feedDLQHandler, authMiddleware, optionalAuthMiddleware)
 
 	return &App{
 		Config: cfg,

@@ -58,6 +58,24 @@ func (r *fakeFeedPostRepoForHandler) ListByUserIDs(_ context.Context, userIDs []
 	return filtered, nil
 }
 
+func (r *fakeFeedPostRepoForHandler) ListPublished(_ context.Context, lastPostID int64, limit int) ([]*model.Post, error) {
+	filtered := make([]*model.Post, 0, len(r.posts))
+	for _, p := range r.posts {
+		if p.Status != 1 {
+			continue
+		}
+		if lastPostID > 0 && p.ID >= lastPostID {
+			continue
+		}
+		filtered = append(filtered, p)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+
+	return filtered, nil
+}
+
 func (r *fakeFeedPostRepoForHandler) ListByIDs(_ context.Context, postIDs []int64) ([]*model.Post, error) {
 	byID := make(map[int64]*model.Post, len(r.posts))
 	for _, post := range r.posts {
@@ -156,6 +174,75 @@ func TestFeedGetHomeFeedSuccess(t *testing.T) {
 	}
 	if result.NextCursor != 8 {
 		t.Fatalf("unexpected next cursor: got=%d want=%d", result.NextCursor, 8)
+	}
+}
+
+func TestFeedGetDiscoverFeedSuccess(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	jwtManager, err := jwtpkg.NewManager(jwtpkg.Config{
+		Secret:      "feed-integration-secret",
+		ExpireHours: 1,
+	})
+	if err != nil {
+		t.Fatalf("new jwt manager failed: %v", err)
+	}
+
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	feedService := service.NewFeedService(
+		&fakeFeedFollowRepoForHandler{followingByUser: map[int64][]int64{}},
+		&fakeFeedPostRepoForHandler{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1003, Content: "p12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1002, Content: "p11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1001, Content: "p10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+			},
+		},
+	)
+	feedHandler := NewFeedHandler(feedService)
+
+	router := gin.New()
+	router.GET("/api/v1/feed/discover", middleware.AuthJWT(jwtManager), feedHandler.GetDiscoverFeed)
+
+	token, err := jwtManager.GenerateToken(1001)
+	if err != nil {
+		t.Fatalf("generate token failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/discover?limit=2", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", resp.Code, http.StatusOK)
+	}
+
+	var body feedAPIResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if body.Code != xerror.CodeOK {
+		t.Fatalf("unexpected response code: got=%d want=%d", body.Code, xerror.CodeOK)
+	}
+
+	var result service.FeedResult
+	if err := json.Unmarshal(body.Data, &result); err != nil {
+		t.Fatalf("unmarshal data failed: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("unexpected item length: got=%d want=%d", len(result.Items), 2)
+	}
+	if result.Items[0].PostID != 12 || result.Items[1].PostID != 11 {
+		t.Fatalf("unexpected discover order: got=%+v", result.Items)
+	}
+	if !result.HasMore {
+		t.Fatal("expected has_more=true")
+	}
+	if result.NextCursor != 11 {
+		t.Fatalf("unexpected next cursor: got=%d want=%d", result.NextCursor, 11)
 	}
 }
 

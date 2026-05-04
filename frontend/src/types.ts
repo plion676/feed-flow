@@ -95,3 +95,30 @@ export type UserPostsResponse = {
   next_cursor: number
   has_more: boolean
 }
+
+export type PostInteraction = {
+  post_id: number
+  liked: boolean
+  collected: boolean
+  like_count: number
+  collect_count: number
+  comment_count: number
+}
+
+export type PostInteractionStatusResponse = {
+  items: PostInteraction[]
+}
+
+export type CommentResponse = {
+  comment_id: number
+  post_id: number
+  user_id: number
+  content: string
+  created_at: string
+}
+
+export type CommentListResponse = {
+  items: CommentResponse[]
+  next_cursor: number
+  has_more: boolean
+}

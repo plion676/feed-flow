@@ -22,6 +22,7 @@ type feedFollowRepository interface {
 
 type feedPostRepository interface {
 	ListByUserIDs(ctx context.Context, userIDs []int64, lastPostID int64, limit int) ([]*model.Post, error)
+	ListPublished(ctx context.Context, lastPostID int64, limit int) ([]*model.Post, error)
 	ListByIDs(ctx context.Context, postIDs []int64) ([]*model.Post, error)
 }
 
@@ -247,6 +248,32 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 	if !req.Refresh {
 		s.setFeedCache(ctx, cacheKey, result)
 	}
+	s.markFeedResultExposure(ctx, req.UserID, result)
+	return result, nil
+}
+
+func (s *FeedService) GetDiscoverFeed(ctx context.Context, req GetFeedRequest) (*FeedResult, *xerror.Error) {
+	if req.UserID <= 0 {
+		return nil, xerror.ErrUnauthorized
+	}
+	if req.Cursor != "" {
+		return nil, xerror.ErrBadRequest
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultFeedLimit
+	}
+	if limit > maxFeedLimit {
+		limit = maxFeedLimit
+	}
+
+	posts, err := s.postRepo.ListPublished(ctx, req.LastPostID, limit+1)
+	if err != nil {
+		return nil, xerror.ErrInternal
+	}
+
+	result := buildFeedResult(posts, limit, len(posts) > limit)
 	s.markFeedResultExposure(ctx, req.UserID, result)
 	return result, nil
 }
