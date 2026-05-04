@@ -66,6 +66,24 @@ func (r *PostRepository) ListByUserIDs(ctx context.Context, userIDs []int64, las
 	return posts, nil
 }
 
+func (r *PostRepository) ListByUserID(ctx context.Context, userID int64, lastPostID int64, limit int) ([]*model.Post, error) {
+	query := r.db.WithContext(ctx).
+		Model(&model.Post{}).
+		Where("status = ?", model.PostStatusPublished).
+		Where("user_id = ?", userID)
+
+	if lastPostID > 0 {
+		query = query.Where("id < ?", lastPostID)
+	}
+
+	var posts []*model.Post
+	if err := query.Order("id DESC").Limit(limit).Find(&posts).Error; err != nil {
+		return nil, err
+	}
+
+	return posts, nil
+}
+
 func (r *PostRepository) ListByIDs(ctx context.Context, postIDs []int64) ([]*model.Post, error) {
 	if len(postIDs) == 0 {
 		return []*model.Post{}, nil

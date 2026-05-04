@@ -71,7 +71,7 @@ func New(cfg *Config) *App {
 	}
 
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
-	userService := service.NewUserService(userRepo)
+	userService := service.NewUserService(userRepo).WithPostRepository(postRepo)
 	postService := service.NewPostService(postRepo)
 	followService := service.NewFollowService(followRepo, userRepo)
 	feedService := service.NewFeedService(followRepo, postRepo)

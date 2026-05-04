@@ -32,9 +32,14 @@ func RegisterRoutes(
 		}
 
 		userGroup := apiV1.Group("/users")
-		userGroup.Use(authMiddleware)
 		{
-			userGroup.GET("/me", userHandler.Me)
+			userGroup.GET("/:id/posts", userHandler.GetUserPosts)
+		}
+
+		authUserGroup := apiV1.Group("/users")
+		authUserGroup.Use(authMiddleware)
+		{
+			authUserGroup.GET("/me", userHandler.Me)
 		}
 
 		postGroup := apiV1.Group("/posts")
