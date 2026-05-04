@@ -84,6 +84,20 @@ func (r *PostRepository) ListByUserID(ctx context.Context, userID int64, lastPos
 	return posts, nil
 }
 
+func (r *PostRepository) CountPublishedByUserID(ctx context.Context, userID int64) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&model.Post{}).
+		Where("status = ?", model.PostStatusPublished).
+		Where("user_id = ?", userID).
+		Count(&count).Error
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 func (r *PostRepository) ListByIDs(ctx context.Context, postIDs []int64) ([]*model.Post, error) {
 	if len(postIDs) == 0 {
 		return []*model.Post{}, nil

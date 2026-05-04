@@ -43,6 +43,26 @@ func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*model.User
 	return &user, nil
 }
 
+func (r *UserRepository) GetByIDs(ctx context.Context, userIDs []int64) ([]*model.User, error) {
+	if len(userIDs) == 0 {
+		return []*model.User{}, nil
+	}
+
+	var rows []model.User
+	err := r.db.WithContext(ctx).Where("id IN ?", userIDs).Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	users := make([]*model.User, 0, len(rows))
+	for i := range rows {
+		user := rows[i]
+		users = append(users, &user)
+	}
+
+	return users, nil
+}
+
 func (r *UserRepository) CreateTx(ctx context.Context, tx *gorm.DB, user *model.User) error {
 	return tx.WithContext(ctx).Create(user).Error
 }

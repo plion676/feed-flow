@@ -9,6 +9,9 @@ import type {
   PostResponse,
   RegisterRequest,
   RegisterResponse,
+  UserPostsResponse,
+  UserFollowListResponse,
+  UserProfileResponse,
 } from './types'
 
 const apiBase = import.meta.env.VITE_API_BASE || '/api/v1'
@@ -38,6 +41,42 @@ export const api = {
     })
   },
 
+  getUserProfile(userID: number, token?: string) {
+    return client.get<ApiEnvelope<UserProfileResponse>>(`/users/${userID}`, {
+      headers: authHeader(token),
+    })
+  },
+
+  getUserPosts(userID: number, options?: { token?: string; limit?: number; lastPostID?: number }) {
+    return client.get<ApiEnvelope<UserPostsResponse>>(`/users/${userID}/posts`, {
+      headers: authHeader(options?.token),
+      params: {
+        ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options?.lastPostID === 'number' ? { last_post_id: options.lastPostID } : {}),
+      },
+    })
+  },
+
+  getUserFollowers(userID: number, options?: { token?: string; limit?: number; lastFollowID?: number }) {
+    return client.get<ApiEnvelope<UserFollowListResponse>>(`/users/${userID}/followers`, {
+      headers: authHeader(options?.token),
+      params: {
+        ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options?.lastFollowID === 'number' ? { last_follow_id: options.lastFollowID } : {}),
+      },
+    })
+  },
+
+  getUserFollowing(userID: number, options?: { token?: string; limit?: number; lastFollowID?: number }) {
+    return client.get<ApiEnvelope<UserFollowListResponse>>(`/users/${userID}/following`, {
+      headers: authHeader(options?.token),
+      params: {
+        ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
+        ...(typeof options?.lastFollowID === 'number' ? { last_follow_id: options.lastFollowID } : {}),
+      },
+    })
+  },
+
   follow(targetUserID: number, token: string) {
     return client.post<ApiEnvelope<{ followed: boolean }>>(
       `/follows/${targetUserID}`,
@@ -46,19 +85,35 @@ export const api = {
     )
   },
 
+  unfollow(targetUserID: number, token: string) {
+    return client.delete<ApiEnvelope<{ followed: boolean }>>(`/follows/${targetUserID}`, {
+      headers: authHeader(token),
+    })
+  },
+
   createPost(payload: CreatePostRequest, token: string) {
     return client.post<ApiEnvelope<PostResponse>>('/posts', payload, {
       headers: authHeader(token),
     })
   },
 
-  getFeed(token: string, options?: { limit?: number; lastPostID?: number; cursor?: string }) {
+  deletePost(postID: number, token: string) {
+    return client.delete<ApiEnvelope<{ post_id: number; user_id: number; deleted: boolean }>>(
+      `/posts/${postID}`,
+      {
+        headers: authHeader(token),
+      },
+    )
+  },
+
+  getFeed(token: string, options?: { limit?: number; lastPostID?: number; cursor?: string; refresh?: boolean }) {
     return client.get<ApiEnvelope<FeedResponse>>('/feed', {
       headers: authHeader(token),
       params: {
         ...(typeof options?.limit === 'number' ? { limit: options.limit } : {}),
         ...(typeof options?.lastPostID === 'number' ? { last_post_id: options.lastPostID } : {}),
         ...(options?.cursor ? { cursor: options.cursor } : {}),
+        ...(options?.refresh ? { refresh: 1 } : {}),
       },
     })
   },

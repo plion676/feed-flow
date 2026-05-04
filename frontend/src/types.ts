@@ -37,6 +37,33 @@ export type MeResponse = {
   bio: string
 }
 
+export type UserProfileResponse = {
+  user_id: number
+  username: string
+  nickname: string
+  avatar: string
+  bio: string
+  following_count: number
+  follower_count: number
+  post_count: number
+  is_following: boolean
+}
+
+export type UserFollowListItem = {
+  user_id: number
+  username: string
+  nickname: string
+  avatar: string
+  bio: string
+  is_following: boolean
+}
+
+export type UserFollowListResponse = {
+  items: UserFollowListItem[]
+  next_cursor: number
+  has_more: boolean
+}
+
 export type CreatePostRequest = {
   content: string
 }
@@ -59,5 +86,12 @@ export type FeedResponse = {
   items: FeedItem[]
   next_cursor: number
   next_cursor_token?: string
+  has_more: boolean
+  fallback_mode?: string
+}
+
+export type UserPostsResponse = {
+  items: FeedItem[]
+  next_cursor: number
   has_more: boolean
 }

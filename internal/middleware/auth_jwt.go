@@ -46,6 +46,34 @@ func AuthJWT(parser tokenParser) gin.HandlerFunc {
 	}
 }
 
+// OptionalAuthJWT parses Bearer tokens when provided, but does not reject guest requests.
+func OptionalAuthJWT(parser tokenParser) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if authHeader == "" {
+			c.Next()
+			return
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
+			response.Fail(c, http.StatusUnauthorized, xerror.ErrUnauthorized)
+			c.Abort()
+			return
+		}
+
+		claims, err := parser.ParseToken(strings.TrimSpace(parts[1]))
+		if err != nil {
+			response.Fail(c, http.StatusUnauthorized, xerror.ErrUnauthorized)
+			c.Abort()
+			return
+		}
+
+		c.Set(currentUserIDKey, claims.UserID)
+		c.Next()
+	}
+}
+
 // CurrentUserID extracts authenticated user id from Gin context.
 func CurrentUserID(c *gin.Context) (int64, bool) {
 	value, exists := c.Get(currentUserIDKey)

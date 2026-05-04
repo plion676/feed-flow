@@ -993,6 +993,103 @@ func TestFeedServiceGetHomeFeedExposure(t *testing.T) {
 			t.Fatalf("unexpected degraded items: %+v", got.Items)
 		}
 	})
+
+	t.Run("manual refresh should fallback to latest posts when exposure filters first page empty", func(t *testing.T) {
+		t.Parallel()
+
+		exposureRepo := &fakeFeedExposureRepo{
+			seenPostIDs: map[int64]map[int64]struct{}{
+				1001: {
+					12: {},
+					11: {},
+					10: {},
+				},
+			},
+		}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "p12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1001, Content: "p11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1002, Content: "p10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithExposure(exposureRepo, FeedExposureOptions{})
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID:  1001,
+			Limit:   3,
+			Refresh: true,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("unexpected refresh fallback result: %+v", got)
+		}
+
+		wantIDs := []int64{12, 11, 10}
+		for i, wantID := range wantIDs {
+			if got.Items[i].PostID != wantID {
+				t.Fatalf("unexpected refresh fallback item at %d: got=%d want=%d", i, got.Items[i].PostID, wantID)
+			}
+		}
+		if got.HasMore {
+			t.Fatalf("unexpected has_more for refresh fallback result: %+v", got)
+		}
+		if got.FallbackMode != "latest" {
+			t.Fatalf("unexpected fallback mode: got=%q want=%q", got.FallbackMode, "latest")
+		}
+		if exposureRepo.markCalled != 1 {
+			t.Fatalf("expected refresh fallback result to be marked seen, got=%d", exposureRepo.markCalled)
+		}
+	})
+
+	t.Run("normal first page should still allow exposure filter to return empty", func(t *testing.T) {
+		t.Parallel()
+
+		exposureRepo := &fakeFeedExposureRepo{
+			seenPostIDs: map[int64]map[int64]struct{}{
+				1001: {
+					12: {},
+					11: {},
+					10: {},
+				},
+			},
+		}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "p12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1001, Content: "p11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1002, Content: "p10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+			},
+		}
+
+		svc := NewFeedService(
+			&fakeFeedFollowRepo{followingIDs: []int64{1002}},
+			postRepo,
+		).WithExposure(exposureRepo, FeedExposureOptions{})
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil {
+			t.Fatal("expected non-nil result")
+		}
+		if len(got.Items) != 0 {
+			t.Fatalf("expected empty normal first page after exposure filtering, got=%+v", got.Items)
+		}
+		if got.FallbackMode != "" {
+			t.Fatalf("expected empty fallback mode on normal first page, got=%q", got.FallbackMode)
+		}
+	})
 }
 
 func TestResolveFeedExposureBatchLimit(t *testing.T) {

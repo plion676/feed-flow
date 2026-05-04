@@ -16,6 +16,7 @@ func RegisterRoutes(
 	feedHandler *handler.FeedHandler,
 	feedDLQHandler *handler.FeedDLQHandler,
 	authMiddleware gin.HandlerFunc,
+	optionalAuthMiddleware gin.HandlerFunc,
 ) {
 	healthHandler := handler.NewHealthHandler()
 
@@ -32,8 +33,12 @@ func RegisterRoutes(
 		}
 
 		userGroup := apiV1.Group("/users")
+		userGroup.Use(optionalAuthMiddleware)
 		{
+			userGroup.GET("/:id", userHandler.GetByID)
 			userGroup.GET("/:id/posts", userHandler.GetUserPosts)
+			userGroup.GET("/:id/followers", userHandler.GetFollowers)
+			userGroup.GET("/:id/following", userHandler.GetFollowing)
 		}
 
 		authUserGroup := apiV1.Group("/users")

@@ -71,7 +71,9 @@ func New(cfg *Config) *App {
 	}
 
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
-	userService := service.NewUserService(userRepo).WithPostRepository(postRepo)
+	userService := service.NewUserService(userRepo).
+		WithPostRepository(postRepo).
+		WithFollowRepository(followRepo)
 	postService := service.NewPostService(postRepo)
 	followService := service.NewFollowService(followRepo, userRepo)
 	feedService := service.NewFeedService(followRepo, postRepo)
@@ -115,8 +117,9 @@ func New(cfg *Config) *App {
 		feedDLQHandler = handler.NewFeedDLQHandler(feedDLQService, feedDLQAccessService)
 	}
 	authMiddleware := middleware.AuthJWT(jwtManager)
+	optionalAuthMiddleware := middleware.OptionalAuthJWT(jwtManager)
 
-	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, followHandler, feedHandler, feedDLQHandler, authMiddleware)
+	router.RegisterRoutes(engine, authHandler, userHandler, postHandler, followHandler, feedHandler, feedDLQHandler, authMiddleware, optionalAuthMiddleware)
 
 	return &App{
 		Config: cfg,

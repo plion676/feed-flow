@@ -257,3 +257,112 @@ func TestFeedGetHomeFeedBadQueryParams(t *testing.T) {
 		})
 	}
 }
+
+func TestFeedGetHomeFeedRefreshQuery(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	jwtManager, err := jwtpkg.NewManager(jwtpkg.Config{
+		Secret:      "feed-integration-secret",
+		ExpireHours: 1,
+	})
+	if err != nil {
+		t.Fatalf("new jwt manager failed: %v", err)
+	}
+
+	now := time.Date(2026, 5, 4, 11, 0, 0, 0, time.UTC)
+	followRepo := &fakeFeedFollowRepoForHandler{
+		followingByUser: map[int64][]int64{
+			1001: {1002},
+		},
+	}
+	postRepo := &fakeFeedPostRepoForHandler{
+		posts: []*model.Post{
+			{ID: 12, UserID: 1002, Content: "p12", Status: 1, CreatedAt: now},
+			{ID: 11, UserID: 1001, Content: "p11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			{ID: 10, UserID: 1002, Content: "p10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+		},
+	}
+	exposureRepo := &serviceFeedExposureRepoForHandler{
+		seenPostIDs: map[int64]map[int64]struct{}{
+			1001: {
+				12: {},
+				11: {},
+				10: {},
+			},
+		},
+	}
+
+	feedService := service.NewFeedService(followRepo, postRepo).WithExposure(exposureRepo, service.FeedExposureOptions{})
+	feedHandler := NewFeedHandler(feedService)
+
+	router := gin.New()
+	router.GET("/api/v1/feed", middleware.AuthJWT(jwtManager), feedHandler.GetHomeFeed)
+
+	token, err := jwtManager.GenerateToken(1001)
+	if err != nil {
+		t.Fatalf("generate token failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/feed?limit=3&refresh=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got=%d want=%d", resp.Code, http.StatusOK)
+	}
+
+	var body feedAPIResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if body.Code != xerror.CodeOK {
+		t.Fatalf("unexpected response code: got=%d want=%d", body.Code, xerror.CodeOK)
+	}
+
+	var result service.FeedResult
+	if err := json.Unmarshal(body.Data, &result); err != nil {
+		t.Fatalf("unmarshal data failed: %v", err)
+	}
+
+	if len(result.Items) != 3 {
+		t.Fatalf("unexpected item length: got=%d want=%d", len(result.Items), 3)
+	}
+	if result.Items[0].PostID != 12 || result.Items[1].PostID != 11 || result.Items[2].PostID != 10 {
+		t.Fatalf("unexpected refresh fallback order: got=%+v", result.Items)
+	}
+	if result.FallbackMode != "latest" {
+		t.Fatalf("unexpected fallback mode: got=%q want=%q", result.FallbackMode, "latest")
+	}
+}
+
+type serviceFeedExposureRepoForHandler struct {
+	seenPostIDs map[int64]map[int64]struct{}
+}
+
+func (r *serviceFeedExposureRepoForHandler) FilterUnseenPostIDs(_ context.Context, userID int64, postIDs []int64, _ time.Duration) ([]int64, error) {
+	userSeen := r.seenPostIDs[userID]
+	filtered := make([]int64, 0, len(postIDs))
+	for _, postID := range postIDs {
+		if _, ok := userSeen[postID]; ok {
+			continue
+		}
+		filtered = append(filtered, postID)
+	}
+	return filtered, nil
+}
+
+func (r *serviceFeedExposureRepoForHandler) MarkSeenPostIDs(_ context.Context, userID int64, postIDs []int64, _ time.Duration) error {
+	if r.seenPostIDs == nil {
+		r.seenPostIDs = make(map[int64]map[int64]struct{})
+	}
+	if r.seenPostIDs[userID] == nil {
+		r.seenPostIDs[userID] = make(map[int64]struct{})
+	}
+	for _, postID := range postIDs {
+		r.seenPostIDs[userID][postID] = struct{}{}
+	}
+	return nil
+}

@@ -175,6 +175,96 @@ func TestAuthJWTTokenValidation(t *testing.T) {
 	}
 }
 
+func TestOptionalAuthJWT(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+
+	manager, err := jwtpkg.NewManager(jwtpkg.Config{
+		Secret:      "optional-secret",
+		ExpireHours: 1,
+	})
+	if err != nil {
+		t.Fatalf("new jwt manager failed: %v", err)
+	}
+
+	validToken, err := manager.GenerateToken(2002)
+	if err != nil {
+		t.Fatalf("generate valid token failed: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		header      string
+		wantStatus  int
+		wantUserID  int64
+		wantHasUser bool
+	}{
+		{
+			name:        "guest request without token",
+			header:      "",
+			wantStatus:  http.StatusOK,
+			wantHasUser: false,
+		},
+		{
+			name:        "valid token should set current user",
+			header:      "Bearer " + validToken,
+			wantStatus:  http.StatusOK,
+			wantUserID:  2002,
+			wantHasUser: true,
+		},
+		{
+			name:       "bad auth scheme should still reject",
+			header:     "Token abc",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "invalid token should reject",
+			header:     "Bearer invalid-token",
+			wantStatus: http.StatusUnauthorized,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				gotUserID  int64
+				gotHasUser bool
+			)
+
+			router := gin.New()
+			router.Use(OptionalAuthJWT(manager))
+			router.GET("/maybe-auth", func(c *gin.Context) {
+				gotUserID, gotHasUser = CurrentUserID(c)
+				c.JSON(http.StatusOK, gin.H{"ok": true})
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/maybe-auth", nil)
+			if tc.header != "" {
+				req.Header.Set("Authorization", tc.header)
+			}
+
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+
+			if resp.Code != tc.wantStatus {
+				t.Fatalf("unexpected status: got=%d want=%d", resp.Code, tc.wantStatus)
+			}
+			if tc.wantStatus != http.StatusOK {
+				return
+			}
+			if gotHasUser != tc.wantHasUser {
+				t.Fatalf("unexpected has user: got=%v want=%v", gotHasUser, tc.wantHasUser)
+			}
+			if tc.wantHasUser && gotUserID != tc.wantUserID {
+				t.Fatalf("unexpected user id: got=%d want=%d", gotUserID, tc.wantUserID)
+			}
+		})
+	}
+}
+
 func signTokenForTest(secret string, userID int64, issuedAt time.Time, expiresAt time.Time) (string, error) {
 	claims := jwtpkg.Claims{
 		UserID: userID,

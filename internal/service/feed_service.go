@@ -51,6 +51,7 @@ type GetFeedRequest struct {
 	LastPostID int64
 	Cursor     string
 	Limit      int
+	Refresh    bool
 }
 
 type FeedItem struct {
@@ -65,6 +66,7 @@ type FeedResult struct {
 	NextCursor      int64      `json:"next_cursor"`
 	NextCursorToken string     `json:"next_cursor_token,omitempty"`
 	HasMore         bool       `json:"has_more"`
+	FallbackMode    string     `json:"fallback_mode,omitempty"`
 }
 
 func NewFeedService(followRepo feedFollowRepository, postRepo feedPostRepository) *FeedService {
@@ -119,8 +121,10 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 	}
 
 	cacheKey := buildFeedCacheKey(req.UserID, req.LastPostID, req.Cursor, limit)
-	if cached, ok := s.getFeedFromCache(ctx, cacheKey); ok {
-		return cached, nil
+	if !req.Refresh {
+		if cached, ok := s.getFeedFromCache(ctx, cacheKey); ok {
+			return cached, nil
+		}
 	}
 
 	var (
@@ -236,9 +240,41 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		result = buildFeedResult(pullCandidates.posts, limit, pullCandidates.hasMore || len(pullCandidates.posts) > limit)
 	}
 
-	s.setFeedCache(ctx, cacheKey, result)
+	if refreshFallback := s.buildRefreshFallbackResult(ctx, req, limit, result); refreshFallback != nil {
+		result = refreshFallback
+	}
+
+	if !req.Refresh {
+		s.setFeedCache(ctx, cacheKey, result)
+	}
 	s.markFeedResultExposure(ctx, req.UserID, result)
 	return result, nil
+}
+
+func (s *FeedService) buildRefreshFallbackResult(
+	ctx context.Context,
+	req GetFeedRequest,
+	limit int,
+	current *FeedResult,
+) *FeedResult {
+	if s == nil || s.exposureRepo == nil || current == nil {
+		return nil
+	}
+	if !req.Refresh || req.Cursor != "" || req.LastPostID > 0 {
+		return nil
+	}
+	if len(current.Items) > 0 {
+		return nil
+	}
+
+	posts, err := s.getHomeFeedByPullPosts(ctx, req.UserID, 0, limit+1)
+	if err != nil || len(posts) == 0 {
+		return nil
+	}
+
+	result := buildFeedResult(posts, limit, len(posts) > limit)
+	result.FallbackMode = "latest"
+	return result
 }
 
 func buildFeedCacheKey(userID int64, lastPostID int64, cursor string, limit int) string {

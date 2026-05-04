@@ -29,11 +29,20 @@ import {
   ShareAltOutlined,
   StarFilled,
   StarOutlined,
+  TeamOutlined,
   UserAddOutlined,
   UserOutlined,
 } from '@ant-design/icons'
 import { api, explainError } from './api'
-import type { FeedItem, FeedResponse, LoginResponse } from './types'
+import type {
+  FeedItem,
+  FeedResponse,
+  LoginResponse,
+  MeResponse,
+  UserFollowListResponse,
+  UserPostsResponse,
+  UserProfileResponse,
+} from './types'
 
 const { Paragraph, Text, Title } = Typography
 
@@ -66,14 +75,31 @@ type FeedState = {
 
 type FeedMode = 'following' | 'discover'
 type MobileTab = 'feed' | 'compose' | 'profile'
+type FollowListKind = 'followers' | 'following'
 
 type NoteInteractionState = {
   liked: boolean
   collected: boolean
 }
 
+type AuthorPostsState = {
+  items: FeedCard[]
+  nextCursor: number
+  hasMore: boolean
+}
+
+type FollowListState = {
+  kind: FollowListKind
+  open: boolean
+  items: UserFollowListResponse['items']
+  nextCursor: number
+  hasMore: boolean
+}
+
 const beijingTimeZone = 'Asia/Shanghai'
 const defaultFeedLimit = 12
+const defaultAuthorPostsLimit = 9
+const defaultFollowListLimit = 8
 const storageKeys = {
   sessions: 'feed-flow-notes:sessions',
   activeSessionKey: 'feed-flow-notes:active-session-key',
@@ -81,6 +107,18 @@ const storageKeys = {
   noteInteractions: 'feed-flow-notes:note-interactions',
 }
 const emptyFeedState: FeedState = {
+  items: [],
+  nextCursor: 0,
+  hasMore: false,
+}
+const emptyAuthorPostsState: AuthorPostsState = {
+  items: [],
+  nextCursor: 0,
+  hasMore: false,
+}
+const emptyFollowListState: FollowListState = {
+  kind: 'followers',
+  open: false,
   items: [],
   nextCursor: 0,
   hasMore: false,
@@ -279,11 +317,20 @@ function App() {
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [showCreateDrawer, setShowCreateDrawer] = useState(false)
   const [selectedPostID, setSelectedPostID] = useState<number>()
+  const [selectedAuthorID, setSelectedAuthorID] = useState<number>()
   const [noteInteractions, setNoteInteractions] = useState<Record<number, NoteInteractionState>>(() =>
     loadStorageValue<Record<number, NoteInteractionState>>(storageKeys.noteInteractions, {}),
   )
   const [mobileTab, setMobileTab] = useState<MobileTab>('feed')
   const [lastResult, setLastResult] = useState('')
+  const [meProfile, setMeProfile] = useState<MeResponse>()
+  const [authorProfiles, setAuthorProfiles] = useState<Record<number, UserProfileResponse>>({})
+  const [authorPostsState, setAuthorPostsState] = useState<AuthorPostsState>(emptyAuthorPostsState)
+  const [loadingAuthorProfile, setLoadingAuthorProfile] = useState(false)
+  const [loadingAuthorPosts, setLoadingAuthorPosts] = useState(false)
+  const [quickAuthorForm] = Form.useForm<{ user_id: number }>()
+  const [followListState, setFollowListState] = useState<FollowListState>(emptyFollowListState)
+  const [loadingFollowList, setLoadingFollowList] = useState(false)
   const [msgApi, contextHolder] = message.useMessage()
 
   const activeSession = useMemo(
@@ -294,6 +341,11 @@ function App() {
   const selectedCard = useMemo(
     () => feedState.items.find((item) => item.post_id === selectedPostID),
     [feedState.items, selectedPostID],
+  )
+
+  const selectedAuthorProfile = useMemo(
+    () => (selectedAuthorID ? authorProfiles[selectedAuthorID] : undefined),
+    [authorProfiles, selectedAuthorID],
   )
 
   const filteredItems = useMemo(() => {
@@ -333,6 +385,12 @@ function App() {
   }, [displayItems, selectedCard])
 
   const detailParagraphs = selectedCard?.content.split(/\n+/).filter((part) => part.trim().length > 0) ?? []
+  const selectedAuthorCards = useMemo(() => {
+    if (!selectedAuthorID) {
+      return []
+    }
+    return feedState.items.filter((item) => item.user_id === selectedAuthorID).slice(0, 3)
+  }, [feedState.items, selectedAuthorID])
 
   useEffect(() => {
     if (!activeSession && sessions.length > 0) {
@@ -371,6 +429,76 @@ function App() {
     }
     window.localStorage.setItem(storageKeys.noteInteractions, JSON.stringify(noteInteractions))
   }, [noteInteractions])
+
+  useEffect(() => {
+    if (!activeSession?.token) {
+      setMeProfile(undefined)
+      setAuthorProfiles({})
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await api.me(activeSession.token)
+        if (!cancelled && res.data.data) {
+          setMeProfile(res.data.data)
+        }
+      } catch {
+        if (!cancelled) {
+          setMeProfile(undefined)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSession?.token])
+
+  useEffect(() => {
+    const missingAuthorIDs = Array.from(new Set(feedState.items.map((item) => item.user_id))).filter(
+      (authorID) => !authorProfiles[authorID],
+    )
+    if (missingAuthorIDs.length === 0) {
+      return
+    }
+
+    let cancelled = false
+    void (async () => {
+      const results = await Promise.all(
+        missingAuthorIDs.map(async (authorID) => {
+          try {
+            const res = await api.getUserProfile(authorID, activeSession?.token)
+            return res.data.data
+          } catch {
+            return undefined
+          }
+        }),
+      )
+      if (cancelled) {
+        return
+      }
+
+      const nextProfiles: Record<number, UserProfileResponse> = {}
+      for (const profile of results) {
+        if (!profile) {
+          continue
+        }
+        nextProfiles[profile.user_id] = profile
+      }
+      if (Object.keys(nextProfiles).length > 0) {
+        setAuthorProfiles((prev) => ({
+          ...prev,
+          ...nextProfiles,
+        }))
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [feedState.items, authorProfiles, activeSession?.token])
 
   const saveResult = (title: string, payload: unknown) => {
     setLastResult(`${title}\n${JSON.stringify(payload, null, 2)}`)
@@ -438,6 +566,22 @@ function App() {
     setSelectedPostID(undefined)
   }
 
+  const closeFollowList = () => {
+    setFollowListState((prev) => ({
+      ...prev,
+      open: false,
+      items: [],
+      nextCursor: 0,
+      hasMore: false,
+    }))
+  }
+
+  const closeAuthorProfile = () => {
+    closeFollowList()
+    setSelectedAuthorID(undefined)
+    setAuthorPostsState(emptyAuthorPostsState)
+  }
+
   const toggleInteraction = (postID: number, field: keyof NoteInteractionState) => {
     setNoteInteractions((prev) => {
       const current = prev[postID] ?? {
@@ -494,7 +638,140 @@ function App() {
     msgApi.info('浏览器未开放剪贴板，已为你打开详情页。')
   }
 
-  const loadFeed = async ({ append, silent = false }: { append: boolean; silent?: boolean }) => {
+  const refreshAuthorProfileCache = (profile: UserProfileResponse) => {
+    setAuthorProfiles((prev) => ({
+      ...prev,
+      [profile.user_id]: profile,
+    }))
+  }
+
+  const loadAuthorProfile = async (authorID: number) => {
+    setLoadingAuthorProfile(true)
+    try {
+      const res = await api.getUserProfile(authorID, activeSession?.token)
+      if (res.data.data) {
+        refreshAuthorProfileCache(res.data.data)
+      }
+      saveResult(`users/${authorID}`, res.data)
+      return res.data.data
+    } catch (err) {
+      msgApi.error(explainError(err))
+      return undefined
+    } finally {
+      setLoadingAuthorProfile(false)
+    }
+  }
+
+  const applyAuthorPostsResponse = (response: UserPostsResponse, append: boolean) => {
+    setAuthorPostsState((prev) => ({
+      items: append ? mergeFeedState(prev.items, response.items) : mapFeedItems(response.items),
+      nextCursor: response.next_cursor,
+      hasMore: response.has_more,
+    }))
+  }
+
+  const loadAuthorPosts = async (authorID: number, append: boolean) => {
+    setLoadingAuthorPosts(true)
+    try {
+      const res = await api.getUserPosts(authorID, {
+        token: activeSession?.token,
+        limit: defaultAuthorPostsLimit,
+        ...(append && authorPostsState.nextCursor > 0
+          ? { lastPostID: authorPostsState.nextCursor }
+          : {}),
+      })
+      if (res.data.data) {
+        applyAuthorPostsResponse(res.data.data, append)
+      }
+      saveResult(append ? `users/${authorID}/posts/load-more` : `users/${authorID}/posts`, res.data)
+    } catch (err) {
+      msgApi.error(explainError(err))
+    } finally {
+      setLoadingAuthorPosts(false)
+    }
+  }
+
+  const openAuthorProfile = async (authorID: number) => {
+    closeFollowList()
+    setSelectedAuthorID(authorID)
+    setAuthorPostsState(emptyAuthorPostsState)
+    await Promise.all([loadAuthorProfile(authorID), loadAuthorPosts(authorID, false)])
+  }
+
+  const loadFollowList = async (kind: FollowListKind, append: boolean) => {
+    if (!selectedAuthorID) {
+      return
+    }
+
+    setLoadingFollowList(true)
+    try {
+      const lastFollowID =
+        append && followListState.kind === kind && followListState.nextCursor > 0
+          ? followListState.nextCursor
+          : undefined
+      const res =
+        kind === 'followers'
+          ? await api.getUserFollowers(selectedAuthorID, {
+              token: activeSession?.token,
+              limit: defaultFollowListLimit,
+              ...(typeof lastFollowID === 'number' ? { lastFollowID } : {}),
+            })
+          : await api.getUserFollowing(selectedAuthorID, {
+              token: activeSession?.token,
+              limit: defaultFollowListLimit,
+              ...(typeof lastFollowID === 'number' ? { lastFollowID } : {}),
+            })
+      const payload = res.data.data
+      setFollowListState({
+        kind,
+        open: true,
+        items:
+          append && followListState.kind === kind
+            ? [...followListState.items, ...(payload?.items ?? [])]
+            : payload?.items ?? [],
+        nextCursor: payload?.next_cursor ?? 0,
+        hasMore: payload?.has_more ?? false,
+      })
+      saveResult(`users/${selectedAuthorID}/${kind}`, res.data)
+    } catch (err) {
+      msgApi.error(explainError(err))
+    } finally {
+      setLoadingFollowList(false)
+    }
+  }
+
+  const openFollowList = async (kind: FollowListKind) => {
+    await loadFollowList(kind, false)
+  }
+
+  const openAuthorFromFollowList = async (userID: number) => {
+    closeFollowList()
+    await openAuthorProfile(userID)
+  }
+
+  const onFollowFromList = async (targetUserID: number) => {
+    await onFollow({ target_user_id: targetUserID })
+    if (followListState.open) {
+      await loadFollowList(followListState.kind, false)
+    }
+  }
+
+  const onUnfollowFromList = async (targetUserID: number) => {
+    await onUnfollow(targetUserID)
+    if (followListState.open) {
+      await loadFollowList(followListState.kind, false)
+    }
+  }
+
+  const loadFeed = async ({
+    append,
+    silent = false,
+    manualRefresh = false,
+  }: {
+    append: boolean
+    silent?: boolean
+    manualRefresh?: boolean
+  }) => {
     const token = requireToken()
     if (!token) return
 
@@ -506,11 +783,16 @@ function App() {
           ? feedState.nextCursorToken
             ? { cursor: feedState.nextCursorToken }
             : { lastPostID: feedState.nextCursor }
-          : {}),
+          : manualRefresh
+            ? { refresh: true }
+            : {}),
       })
       const payload = res.data.data
       if (payload) {
         applyFeedResponse(payload, append)
+        if (!append && manualRefresh && payload.fallback_mode === 'latest') {
+          msgApi.info('暂无更多新内容，已为你展示最近内容')
+        }
       }
       saveResult(append ? 'feed/load-more' : 'feed/refresh', res.data)
       if (!append && !silent) {
@@ -581,6 +863,32 @@ function App() {
         const res = await api.follow(values.target_user_id, token)
         saveResult('follow', res.data)
         msgApi.success(`已关注用户 #${values.target_user_id}`)
+        await loadFeed({ append: false, silent: true })
+        if (selectedAuthorID === values.target_user_id) {
+          await Promise.all([
+            loadAuthorProfile(values.target_user_id),
+            loadAuthorPosts(values.target_user_id, false),
+          ])
+        }
+      } catch (err) {
+        msgApi.error(explainError(err))
+      }
+    })
+  }
+
+  const onUnfollow = async (targetUserID: number) => {
+    const token = requireToken()
+    if (!token) return
+
+    await withBusyAction(async () => {
+      try {
+        const res = await api.unfollow(targetUserID, token)
+        saveResult('unfollow', res.data)
+        msgApi.success(`已取消关注用户 #${targetUserID}`)
+        await loadFeed({ append: false, silent: true })
+        if (selectedAuthorID === targetUserID) {
+          await Promise.all([loadAuthorProfile(targetUserID), loadAuthorPosts(targetUserID, false)])
+        }
       } catch (err) {
         msgApi.error(explainError(err))
       }
@@ -595,6 +903,9 @@ function App() {
       try {
         const res = await api.me(token)
         saveResult('users/me', res.data)
+        if (res.data.data) {
+          setMeProfile(res.data.data)
+        }
         msgApi.success('账号信息已同步')
       } catch (err) {
         msgApi.error(explainError(err))
@@ -602,9 +913,65 @@ function App() {
     })
   }
 
+  const performDeletePost = async (postID: number, authorUserID: number) => {
+    const token = requireToken()
+    if (!token) return
+
+    await withBusyAction(async () => {
+      try {
+        const res = await api.deletePost(postID, token)
+        saveResult('delete-post', res.data)
+        msgApi.success(`已删除帖子 #${postID}`)
+
+        setFeedState((prev) => ({
+          ...prev,
+          items: prev.items.filter((item) => item.post_id !== postID),
+        }))
+        setAuthorPostsState((prev) => ({
+          ...prev,
+          items: prev.items.filter((item) => item.post_id !== postID),
+        }))
+
+        if (selectedPostID === postID) {
+          closeNoteDetail()
+        }
+
+        await loadFeed({ append: false, silent: true })
+
+        if (selectedAuthorID === authorUserID) {
+          await Promise.all([loadAuthorProfile(authorUserID), loadAuthorPosts(authorUserID, false)])
+        } else if (authorProfiles[authorUserID]) {
+          await loadAuthorProfile(authorUserID)
+        }
+      } catch (err) {
+        msgApi.error(explainError(err))
+      }
+    })
+  }
+
+  const onDeletePost = (postID: number, authorUserID: number) => {
+    Modal.confirm({
+      title: '确认删除这条帖子吗？',
+      content: `删除后会从当前展示列表中移除，post_id=${postID}`,
+      okText: '确认删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: async () => {
+        await performDeletePost(postID, authorUserID)
+      },
+    })
+  }
+
+  const onOpenQuickAuthor = async (values: { user_id: number }) => {
+    await openAuthorProfile(values.user_id)
+  }
+
   const emptyState = !loadingFeed && displayItems.length === 0
   const showFeedStageOnMobile = mobileTab === 'feed'
   const showLeftPanelOnMobile = mobileTab === 'profile'
+  const canDeleteSelectedPost = Boolean(
+    activeSession && selectedCard && activeSession.userID === selectedCard.user_id,
+  )
 
   const renderNoteCard = (item: FeedCard, variant: 'warm' | 'cool') => {
     const interaction = getInteractionState(item.post_id)
@@ -667,9 +1034,31 @@ function App() {
 
           <div className="note-meta">
             <div className="author-chip">
-              <Avatar size={28} icon={<UserOutlined />} />
+              <button
+                type="button"
+                className="author-avatar-btn"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  void openAuthorProfile(item.user_id)
+                }}
+              >
+                <Avatar
+                  size={28}
+                  src={authorProfiles[item.user_id]?.avatar || undefined}
+                  icon={<UserOutlined />}
+                />
+              </button>
               <div>
-                <div className="author-name">作者 #{item.user_id}</div>
+                <button
+                  type="button"
+                  className="author-name-btn"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void openAuthorProfile(item.user_id)
+                  }}
+                >
+                  {authorProfiles[item.user_id]?.nickname ?? `作者 #${item.user_id}`}
+                </button>
                 <div className="author-time">{formatBeijingDateTime(item.created_at)}</div>
               </div>
             </div>
@@ -751,7 +1140,7 @@ function App() {
           <Button
             className="ghost-btn"
             icon={<ReloadOutlined />}
-            onClick={() => void loadFeed({ append: false })}
+            onClick={() => void loadFeed({ append: false, manualRefresh: true })}
             loading={loadingFeed}
           >
             刷新
@@ -772,17 +1161,52 @@ function App() {
         <aside className={`left-panel ${showLeftPanelOnMobile ? 'mobile-visible' : 'mobile-hidden'}`}>
           <section className="panel-card profile-card">
             <div className="profile-head">
-              <Avatar size={54} icon={<UserOutlined />} />
+              <button
+                type="button"
+                className="profile-avatar-btn"
+                disabled={!activeSession}
+                onClick={() => {
+                  if (activeSession) {
+                    void openAuthorProfile(activeSession.userID)
+                  }
+                }}
+              >
+                <Avatar size={54} src={meProfile?.avatar || undefined} icon={<UserOutlined />} />
+              </button>
               <div>
                 <div className="panel-kicker">当前账号</div>
-                <div className="profile-name">{activeSession ? activeSession.nickname : '还没有登录'}</div>
+                {activeSession ? (
+                  <button
+                    type="button"
+                    className="profile-name-btn"
+                    onClick={() => void openAuthorProfile(activeSession.userID)}
+                  >
+                    {meProfile?.nickname ?? activeSession.nickname}
+                  </button>
+                ) : (
+                  <div className="profile-name">还没有登录</div>
+                )}
                 <Text className="muted-text">
                   {activeSession
-                    ? `@${activeSession.username} · user_id=${activeSession.userID}`
+                    ? `@${meProfile?.username ?? activeSession.username} · user_id=${activeSession.userID}`
                     : '登录后即可发帖、关注和拉取 feed'}
                 </Text>
+                {meProfile?.bio ? <div className="profile-bio">{meProfile.bio}</div> : null}
               </div>
             </div>
+
+            {activeSession ? (
+              <div className="profile-stat-row">
+                <div className="profile-stat-chip">
+                  <span>身份</span>
+                  <strong>{activeSession.userID}</strong>
+                </div>
+                <div className="profile-stat-chip">
+                  <span>昵称</span>
+                  <strong>{meProfile?.nickname ?? activeSession.nickname}</strong>
+                </div>
+              </div>
+            ) : null}
 
             <div className="session-list">
               {sessions.length === 0 ? (
@@ -857,6 +1281,27 @@ function App() {
               </Button>
             </Form>
           </section>
+
+          <section className="panel-card author-jump-card">
+            <div className="panel-head">
+              <span className="panel-kicker">作者主页</span>
+            </div>
+            <Paragraph className="panel-copy">
+              输入任意用户 ID，快速查看对方主页、作品、关注和粉丝。
+            </Paragraph>
+            <Form form={quickAuthorForm} layout="vertical" onFinish={onOpenQuickAuthor}>
+              <Form.Item
+                name="user_id"
+                label="作者用户 ID"
+                rules={[{ required: true, message: '填一个作者 ID' }]}
+              >
+                <InputNumber min={1} placeholder="例如 1 / 2 / 1001" style={{ width: '100%' }} />
+              </Form.Item>
+              <Button htmlType="submit" block loading={loadingAuthorProfile || loadingAuthorPosts}>
+                查看该作者主页
+              </Button>
+            </Form>
+          </section>
         </aside>
 
         <section className={`feed-stage ${showFeedStageOnMobile ? 'mobile-visible' : 'mobile-hidden'}`}>
@@ -896,7 +1341,7 @@ function App() {
                   去登录
                 </Button>
               ) : (
-                <Button onClick={() => void loadFeed({ append: false })}>立即刷新</Button>
+                <Button onClick={() => void loadFeed({ append: false, manualRefresh: true })}>立即刷新</Button>
               )}
             </div>
           ) : (
@@ -1091,7 +1536,13 @@ function App() {
                 <div className="detail-hero-kicker">Feed Flow Notes</div>
                 <h2 className="detail-hero-title">{selectedCard.heroTitle}</h2>
                 <div className="detail-hero-meta">
-                  <span>作者 #{selectedCard.user_id}</span>
+                  <button
+                    type="button"
+                    className="detail-author-link"
+                    onClick={() => void openAuthorProfile(selectedCard.user_id)}
+                  >
+                    {authorProfiles[selectedCard.user_id]?.nickname ?? `作者 #${selectedCard.user_id}`}
+                  </button>
                   <span>{formatBeijingDateTime(selectedCard.created_at)}</span>
                 </div>
               </div>
@@ -1100,11 +1551,27 @@ function App() {
             <section className="detail-panel">
               <div className="detail-author-row">
                 <div className="detail-author-main">
-                  <Avatar size={44} icon={<UserOutlined />} />
+                  <button
+                    type="button"
+                    className="detail-author-avatar-btn"
+                    onClick={() => void openAuthorProfile(selectedCard.user_id)}
+                  >
+                    <Avatar
+                      size={44}
+                      src={authorProfiles[selectedCard.user_id]?.avatar || undefined}
+                      icon={<UserOutlined />}
+                    />
+                  </button>
                   <div>
-                    <div className="detail-author-name">作者 #{selectedCard.user_id}</div>
+                    <button
+                      type="button"
+                      className="detail-author-name-btn"
+                      onClick={() => void openAuthorProfile(selectedCard.user_id)}
+                    >
+                      {authorProfiles[selectedCard.user_id]?.nickname ?? `作者 #${selectedCard.user_id}`}
+                    </button>
                     <div className="detail-author-subtitle">
-                      post_id={selectedCard.post_id} · 北京时间 {formatBeijingDateTime(selectedCard.created_at)}
+                      {authorProfiles[selectedCard.user_id]?.bio || `post_id=${selectedCard.post_id} · 北京时间 ${formatBeijingDateTime(selectedCard.created_at)}`}
                     </div>
                   </div>
                 </div>
@@ -1161,6 +1628,16 @@ function App() {
                   <ShareAltOutlined />
                   <span>分享</span>
                 </button>
+
+                {canDeleteSelectedPost ? (
+                  <button
+                    type="button"
+                    className="detail-action-btn danger"
+                    onClick={() => void onDeletePost(selectedCard.post_id, selectedCard.user_id)}
+                  >
+                    <span>删除帖子</span>
+                  </button>
+                ) : null}
               </div>
 
               <div className="detail-stat-grid">
@@ -1212,7 +1689,7 @@ function App() {
                         <span className="detail-rec-tag">{item.topicTags[0] ?? '#推荐'}</span>
                         <strong>{item.heroTitle}</strong>
                         <span className="detail-rec-meta">
-                          作者 #{item.user_id} · {formatBeijingDateTime(item.created_at)}
+                          {authorProfiles[item.user_id]?.nickname ?? `作者 #${item.user_id}`} · {formatBeijingDateTime(item.created_at)}
                         </span>
                       </button>
                     ))}
@@ -1222,6 +1699,255 @@ function App() {
             </section>
           </div>
         ) : null}
+      </Modal>
+
+      <Drawer
+        open={Boolean(selectedAuthorID)}
+        onClose={closeAuthorProfile}
+        width={480}
+        destroyOnHidden
+        title="作者主页"
+        className="author-drawer"
+      >
+        {selectedAuthorID ? (
+          <div className="author-drawer-body">
+            <div className="author-profile-header">
+              <Avatar
+                size={72}
+                src={selectedAuthorProfile?.avatar || undefined}
+                icon={<UserOutlined />}
+              />
+              <div className="author-profile-meta">
+                <div className="author-profile-name">
+                  {selectedAuthorProfile?.nickname ?? `作者 #${selectedAuthorID}`}
+                </div>
+                <div className="author-profile-handle">
+                  @{selectedAuthorProfile?.username ?? `user-${selectedAuthorID}`}
+                </div>
+                <div className="author-profile-bio">
+                  {selectedAuthorProfile?.bio || '这个作者还没有填写简介。'}
+                </div>
+              </div>
+            </div>
+
+            {loadingAuthorProfile && !selectedAuthorProfile ? (
+              <div className="author-profile-loading">
+                <Spin />
+              </div>
+            ) : null}
+
+            {selectedAuthorProfile ? (
+              <>
+                <div className="author-profile-stats">
+                  <button type="button" className="author-profile-stat interactive" disabled>
+                    <span>作品</span>
+                    <strong>{formatCount(selectedAuthorProfile.post_count)}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className="author-profile-stat interactive"
+                    onClick={() => void openFollowList('followers')}
+                  >
+                    <span>粉丝</span>
+                    <strong>{formatCount(selectedAuthorProfile.follower_count)}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className="author-profile-stat interactive"
+                    onClick={() => void openFollowList('following')}
+                  >
+                    <span>关注</span>
+                    <strong>{formatCount(selectedAuthorProfile.following_count)}</strong>
+                  </button>
+                </div>
+
+                <div className="author-profile-actions">
+                  <Tag color={selectedAuthorProfile.is_following ? 'magenta' : 'gold'}>
+                    {selectedAuthorProfile.is_following ? '已关注' : '未关注'}
+                  </Tag>
+                  {activeSession && activeSession.userID !== selectedAuthorProfile.user_id ? (
+                    <Space wrap>
+                      {selectedAuthorProfile.is_following ? (
+                        <Button
+                          danger
+                          icon={<UserAddOutlined />}
+                          loading={busyAction}
+                          onClick={() => void onUnfollow(selectedAuthorProfile.user_id)}
+                        >
+                          取消关注
+                        </Button>
+                      ) : (
+                        <Button
+                          type="primary"
+                          icon={<UserAddOutlined />}
+                          loading={busyAction}
+                          onClick={() => void onFollow({ target_user_id: selectedAuthorProfile.user_id })}
+                        >
+                          关注作者
+                        </Button>
+                      )}
+                    </Space>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+
+            <div className="author-posts-section">
+              <div className="author-posts-head">
+                <span>作者发布的内容</span>
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={loadingAuthorPosts}
+                  onClick={() => void loadAuthorPosts(selectedAuthorID, false)}
+                >
+                  刷新
+                </Button>
+              </div>
+
+              {loadingAuthorPosts && authorPostsState.items.length === 0 ? (
+                <div className="author-profile-loading">
+                  <Spin />
+                </div>
+              ) : authorPostsState.items.length === 0 ? (
+                <Empty description="这个作者暂时还没有公开作品。" />
+              ) : (
+                <>
+                  <div className="author-post-list">
+                    {authorPostsState.items.map((item) => (
+                      <div className="author-post-item" key={`author-post-${item.post_id}`}>
+                        <button
+                          type="button"
+                          className="author-post-main"
+                          onClick={() => {
+                            setSelectedAuthorID(undefined)
+                            setSelectedPostID(item.post_id)
+                          }}
+                        >
+                          <div className="author-post-title">{item.heroTitle}</div>
+                          <div className="author-post-copy">{item.noteText}</div>
+                          <div className="author-post-meta">
+                            <span>{formatBeijingDateTime(item.created_at)}</span>
+                            <span>#{item.post_id}</span>
+                          </div>
+                        </button>
+
+                        {activeSession && activeSession.userID === item.user_id ? (
+                          <button
+                            type="button"
+                            className="author-post-delete-btn"
+                            onClick={() => onDeletePost(item.post_id, item.user_id)}
+                          >
+                            删除
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+
+                  {authorPostsState.hasMore ? (
+                    <Button
+                      block
+                      loading={loadingAuthorPosts}
+                      onClick={() => void loadAuthorPosts(selectedAuthorID, true)}
+                    >
+                      查看更多作品
+                    </Button>
+                  ) : null}
+                </>
+              )}
+
+              {selectedAuthorCards.length > 0 ? (
+                <div className="author-local-preview">
+                  <div className="author-local-preview-title">
+                    <TeamOutlined />
+                    <span>当前首页里也出现过这些内容</span>
+                  </div>
+                  <div className="author-local-preview-list">
+                    {selectedAuthorCards.map((item) => (
+                      <button
+                        type="button"
+                        className="author-local-preview-item"
+                        key={`author-local-${item.post_id}`}
+                        onClick={() => {
+                          setSelectedAuthorID(undefined)
+                          setSelectedPostID(item.post_id)
+                        }}
+                      >
+                        <strong>{item.heroTitle}</strong>
+                        <span>{formatBeijingDateTime(item.created_at)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </Drawer>
+
+      <Modal
+        open={followListState.open}
+        footer={null}
+        onCancel={closeFollowList}
+        width={520}
+        destroyOnHidden
+        title={followListState.kind === 'followers' ? '粉丝列表' : '关注列表'}
+      >
+        {loadingFollowList ? (
+          <div className="follow-list-loading">
+            <Spin />
+          </div>
+        ) : followListState.items.length === 0 ? (
+          <Empty
+            description={followListState.kind === 'followers' ? '还没有粉丝。' : '还没有关注任何人。'}
+          />
+        ) : (
+          <div className="follow-list-panel">
+            {followListState.items.map((item) => (
+              <div className="follow-list-item" key={`${followListState.kind}-${item.user_id}`}>
+                <button
+                  type="button"
+                  className="follow-list-item-link"
+                  onClick={() => void openAuthorFromFollowList(item.user_id)}
+                >
+                  <Avatar size={48} src={item.avatar || undefined} icon={<UserOutlined />} />
+                  <div className="follow-list-item-main">
+                    <div className="follow-list-item-head">
+                      <strong>{item.nickname || `用户 #${item.user_id}`}</strong>
+                      <span>@{item.username || `user-${item.user_id}`}</span>
+                    </div>
+                    <div className="follow-list-item-bio">
+                      {item.bio || '这个用户还没有填写简介。'}
+                    </div>
+                  </div>
+                </button>
+
+                {activeSession && activeSession.userID !== item.user_id ? (
+                  item.is_following ? (
+                    <Button danger loading={busyAction} onClick={() => void onUnfollowFromList(item.user_id)}>
+                      取消关注
+                    </Button>
+                  ) : (
+                    <Button type="primary" loading={busyAction} onClick={() => void onFollowFromList(item.user_id)}>
+                      关注
+                    </Button>
+                  )
+                ) : null}
+              </div>
+            ))}
+
+            {followListState.hasMore ? (
+              <Button
+                block
+                loading={loadingFollowList}
+                onClick={() => void loadFollowList(followListState.kind, true)}
+              >
+                查看更多
+              </Button>
+            ) : null}
+          </div>
+        )}
       </Modal>
     </div>
   )

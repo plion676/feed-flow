@@ -53,11 +53,14 @@ func (h *FeedHandler) GetHomeFeed(c *gin.Context) {
 		limit = parsed
 	}
 
+	refresh := c.Query("refresh") == "1"
+
 	result, bizErr := h.feedService.GetHomeFeed(c.Request.Context(), service.GetFeedRequest{
 		UserID:     userID,
 		LastPostID: lastPostID,
 		Cursor:     cursor,
 		Limit:      limit,
+		Refresh:    refresh,
 	})
 	if bizErr != nil {
 		response.Fail(c, httpStatusFromError(bizErr), bizErr)
