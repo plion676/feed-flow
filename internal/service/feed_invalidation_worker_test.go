@@ -46,11 +46,27 @@ type fakeWorkerInboxFanout struct {
 	err            error
 }
 
+type fakeWorkerInboxCleanup struct {
+	called         int
+	gotFollowerIDs []int64
+	gotPostID      int64
+	gotStreamID    string
+	err            error
+}
+
 func (f *fakeWorkerInboxFanout) FanoutPostToFollowers(ctx context.Context, followerIDs []int64, postID int64, occurredAt int64) error {
 	f.called++
 	f.gotFollowerIDs = append([]int64{}, followerIDs...)
 	f.gotPostID = postID
 	f.gotOccurredAt = occurredAt
+	f.gotStreamID = getFeedEventLogFields(ctx).StreamID
+	return f.err
+}
+
+func (f *fakeWorkerInboxCleanup) RemovePostFromFollowers(ctx context.Context, followerIDs []int64, postID int64) error {
+	f.called++
+	f.gotFollowerIDs = append([]int64{}, followerIDs...)
+	f.gotPostID = postID
 	f.gotStreamID = getFeedEventLogFields(ctx).StreamID
 	return f.err
 }
@@ -263,9 +279,11 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
 		invalidator := &fakeWorkerInvalidator{}
 		fanout := &fakeWorkerInboxFanout{}
+		cleanup := &fakeWorkerInboxCleanup{}
 		worker := NewFeedInvalidationWorker(followRepo, invalidator).
 			WithHybridPolicy(NewFeedHybridPolicy(100)).
-			WithInboxFanout(fanout)
+			WithInboxFanout(fanout).
+			WithInboxCleanup(cleanup)
 
 		err := worker.HandlePostDeletedEvent(ctx, PostLifecycleEvent{
 			StreamID:     "1740000000001-0",
@@ -278,8 +296,68 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		if fanout.called != 0 {
 			t.Fatalf("delete event should not fanout inbox writes, got=%d", fanout.called)
 		}
+		if cleanup.called != 1 {
+			t.Fatalf("delete event should cleanup inbox once, got=%d", cleanup.called)
+		}
+		if cleanup.gotPostID != 3001 {
+			t.Fatalf("unexpected cleanup post id: got=%d want=%d", cleanup.gotPostID, 3001)
+		}
+		if cleanup.gotStreamID != "1740000000001-0" {
+			t.Fatalf("unexpected cleanup stream id: got=%q", cleanup.gotStreamID)
+		}
 		if invalidator.CalledCount() != len(followerIDs) {
 			t.Fatalf("unexpected invalidation call count: got=%d want=%d", invalidator.CalledCount(), len(followerIDs))
+		}
+	})
+
+	t.Run("delete cleanup failure should still attempt feed invalidation and return error", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{}
+		cleanup := &fakeWorkerInboxCleanup{err: errors.New("cleanup failed")}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithInboxCleanup(cleanup)
+
+		err := worker.HandlePostDeletedEvent(ctx, PostLifecycleEvent{
+			AuthorUserID: 1001,
+			PostID:       3001,
+		})
+		if err == nil {
+			t.Fatal("expected cleanup error")
+		}
+		if cleanup.called != 1 {
+			t.Fatalf("expected cleanup called once, got=%d", cleanup.called)
+		}
+		if invalidator.CalledCount() != len(followerIDs) {
+			t.Fatalf("feed invalidation should still be attempted, got=%d want=%d", invalidator.CalledCount(), len(followerIDs))
+		}
+	})
+
+	t.Run("delete cleanup error should join invalidation error when both fail", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{
+			failByFollower: map[int64]error{
+				2001: errors.New("invalidate failed"),
+			},
+		}
+		cleanup := &fakeWorkerInboxCleanup{err: errors.New("cleanup failed")}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithInboxCleanup(cleanup)
+
+		err := worker.HandlePostDeletedEvent(ctx, PostLifecycleEvent{
+			AuthorUserID: 1001,
+			PostID:       3001,
+		})
+		if err == nil {
+			t.Fatal("expected joined error")
+		}
+		if invalidator.CalledCount() != len(followerIDs) {
+			t.Fatalf("all invalidations should still be attempted, got=%d want=%d", invalidator.CalledCount(), len(followerIDs))
 		}
 	})
 }

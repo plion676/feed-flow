@@ -1,0 +1,181 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">Feed Flow System Architecture Overview</title>
+  <desc id="desc">Clean layered overview of clients, HTTP service, MySQL, Redis, and async worker in Feed Flow System.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f5f1e8; }
+      .panel { fill: #fffdf9; stroke: #1f2937; stroke-width: 2; rx: 26; ry: 26; }
+      .subpanel { fill: #fffaf0; stroke: #1f2937; stroke-width: 1.8; rx: 18; ry: 18; }
+      .node { fill: #fff6e2; stroke: #1f2937; stroke-width: 1.8; rx: 14; ry: 14; }
+      .client { fill: #eee3d0; }
+      .service { fill: #fff0c9; }
+      .repo { fill: #f3e9d8; }
+      .mysql { fill: #e3efe8; }
+      .redis { fill: #f7e5dd; }
+      .worker { fill: #e6edfb; }
+      .flow { fill: #f0f5ff; stroke: #3b82f6; stroke-width: 1.6; rx: 14; ry: 14; }
+      .title { font-family: "Segoe UI", Arial, sans-serif; font-size: 30px; font-weight: 700; fill: #111827; }
+      .subtitle { font-family: "Segoe UI", Arial, sans-serif; font-size: 17px; fill: #4b5563; }
+      .section { font-family: "Segoe UI", Arial, sans-serif; font-size: 22px; font-weight: 700; fill: #111827; }
+      .label { font-family: "Segoe UI", Arial, sans-serif; font-size: 16px; font-weight: 600; fill: #111827; }
+      .small { font-family: "Segoe UI", Arial, sans-serif; font-size: 13px; fill: #4b5563; }
+      .list { font-family: "Segoe UI", Arial, sans-serif; font-size: 14px; fill: #1f2937; }
+      .line { stroke: #1f2937; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .dash { stroke-dasharray: 8 7; }
+      .lineLabel { font-family: "Segoe UI", Arial, sans-serif; font-size: 13px; fill: #374151; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f2937"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="980"/>
+
+  <text class="title" x="52" y="62">Feed Flow System - Architecture Overview</text>
+  <text class="subtitle" x="52" y="94">A layered overview of synchronous request handling, data responsibilities, and the asynchronous feed worker pipeline.</text>
+
+  <rect class="panel" x="36" y="136" width="220" height="206"/>
+  <text class="section" x="60" y="174">Clients</text>
+  <rect class="node client" x="60" y="202" width="172" height="58"/>
+  <text class="label" x="114" y="237">Web Frontend</text>
+  <rect class="node client" x="60" y="278" width="172" height="58"/>
+  <text class="label" x="84" y="313">Postman / API Client</text>
+
+  <rect class="panel" x="292" y="136" width="650" height="604"/>
+  <text class="section" x="318" y="174">HTTP Service (cmd/server)</text>
+
+  <rect class="node" x="318" y="202" width="248" height="72"/>
+  <text class="label" x="388" y="232">Gin Engine / Router</text>
+  <text class="small" x="349" y="254">Route registration and HTTP entrypoint</text>
+
+  <rect class="node" x="602" y="202" width="314" height="72"/>
+  <text class="label" x="695" y="232">Middleware Chain</text>
+  <text class="small" x="646" y="254">RequestID / Logger / Recovery / JWT Auth</text>
+
+  <rect class="subpanel" x="318" y="304" width="286" height="404"/>
+  <text class="section" x="342" y="340">Core Services</text>
+  <rect class="node service" x="342" y="362" width="238" height="50"/>
+  <text class="label" x="420" y="393">AuthService</text>
+  <rect class="node service" x="342" y="426" width="238" height="50"/>
+  <text class="label" x="419" y="457">UserService</text>
+  <rect class="node service" x="342" y="490" width="238" height="50"/>
+  <text class="label" x="420" y="521">PostService</text>
+  <rect class="node service" x="342" y="554" width="238" height="50"/>
+  <text class="label" x="408" y="585">FollowService</text>
+  <rect class="node service" x="342" y="618" width="238" height="50"/>
+  <text class="label" x="420" y="649">FeedService</text>
+
+  <rect class="subpanel" x="628" y="304" width="288" height="238"/>
+  <text class="section" x="652" y="340">Extended Services</text>
+  <rect class="node service" x="652" y="364" width="240" height="58"/>
+  <text class="label" x="718" y="398">PostInteractionService</text>
+  <rect class="node service" x="652" y="438" width="240" height="76"/>
+  <text class="label" x="694" y="470">FeedDLQService / AccessService</text>
+  <text class="small" x="714" y="492">DLQ query and replay authorization</text>
+
+  <rect class="subpanel" x="628" y="566" width="288" height="142"/>
+  <text class="section" x="652" y="602">Repository Layer</text>
+  <rect class="node repo" x="652" y="624" width="240" height="38"/>
+  <text class="label" x="728" y="649">MySQL Repositories</text>
+  <rect class="node repo" x="652" y="672" width="240" height="38"/>
+  <text class="label" x="731" y="697">Redis Repositories</text>
+
+  <rect class="panel" x="978" y="136" width="258" height="270"/>
+  <text class="section" x="1004" y="174">MySQL</text>
+  <rect class="subpanel mysql" x="1004" y="202" width="206" height="76"/>
+  <text class="label" x="1070" y="228">Core Data</text>
+  <text class="list" x="1028" y="252">users / user_counts</text>
+  <text class="list" x="1028" y="270">posts / follows</text>
+  <rect class="subpanel mysql" x="1004" y="292" width="206" height="70"/>
+  <text class="label" x="1048" y="318">Interaction Data</text>
+  <text class="list" x="1028" y="342">post_likes / post_collects</text>
+  <text class="list" x="1028" y="360">post_comments</text>
+  <rect class="subpanel mysql" x="1004" y="376" width="206" height="30"/>
+  <text class="list" x="1028" y="396">feed_dlq_operators</text>
+
+  <rect class="panel" x="978" y="434" width="258" height="306"/>
+  <text class="section" x="1004" y="472">Redis</text>
+  <rect class="subpanel redis" x="1004" y="500" width="206" height="96"/>
+  <text class="label" x="1056" y="526">Read Path Data</text>
+  <text class="list" x="1028" y="550">feed:home:*</text>
+  <text class="list" x="1028" y="570">feed:inbox:{user_id}</text>
+  <text class="list" x="1028" y="590">feed:exposure:{user_id}</text>
+  <rect class="subpanel redis" x="1004" y="614" width="206" height="110"/>
+  <text class="label" x="1064" y="640">Async Data</text>
+  <text class="list" x="1028" y="664">feed:invalidation:events</text>
+  <text class="list" x="1028" y="684">feed:invalidation:retry:{stream_id}</text>
+  <text class="list" x="1028" y="704">feed:invalidation:dlq</text>
+
+  <rect class="panel" x="1272" y="136" width="292" height="470"/>
+  <text class="section" x="1298" y="174">Async Worker (cmd/worker)</text>
+  <rect class="node worker" x="1298" y="202" width="240" height="68"/>
+  <text class="label" x="1352" y="232">Consumer</text>
+  <text class="small" x="1322" y="254">XREADGROUP / XAUTOCLAIM</text>
+  <rect class="node worker" x="1298" y="286" width="240" height="52"/>
+  <text class="label" x="1334" y="317">FeedInvalidationWorker</text>
+  <rect class="node worker" x="1298" y="354" width="240" height="68"/>
+  <text class="label" x="1371" y="384">Inbox Fanout</text>
+  <text class="small" x="1364" y="406">and Cleanup</text>
+  <rect class="node worker" x="1298" y="438" width="240" height="52"/>
+  <text class="label" x="1333" y="469">Feed Cache Invalidation</text>
+  <rect class="node worker" x="1298" y="506" width="240" height="76"/>
+  <text class="label" x="1383" y="536">Retry</text>
+  <text class="small" x="1338" y="558">Backoff / ACK / DLQ</text>
+
+  <rect class="flow" x="36" y="784" width="1528" height="150"/>
+  <text class="section" x="62" y="820">Key Flows</text>
+  <text class="label" x="62" y="854">Read Path</text>
+  <text class="small" x="62" y="876">Client -> FeedService -> Feed Cache / Inbox / MySQL Pull Query / Exposure Window</text>
+  <text class="label" x="62" y="904">Write Path</text>
+  <text class="small" x="62" y="926">Client -> PostService -> MySQL posts -> Redis Stream event</text>
+  <text class="label" x="760" y="854">Async Path</text>
+  <text class="small" x="760" y="876">Redis Stream -> Worker -> Inbox fanout / inbox cleanup / feed cache invalidation / retry / DLQ</text>
+  <text class="label" x="760" y="904">Consistency Guards</text>
+  <text class="small" x="760" y="926">Feed cache invalidation, read-path author filtering, deleted-post filtering, retry counters, XAUTOCLAIM reclaim</text>
+
+  <path class="line" d="M232 231 H318"/>
+  <path class="line" d="M232 307 H318"/>
+  <path class="line" d="M566 238 H602"/>
+  <path class="line" d="M759 274 V304"/>
+  <text class="lineLabel" x="774" y="294">validated requests</text>
+
+  <path class="line" d="M461 668 V730 H772 V710"/>
+  <text class="lineLabel" x="487" y="724">business logic -> repositories</text>
+
+  <path class="line" d="M892 643 H978"/>
+  <text class="lineLabel" x="905" y="632">structured DB access</text>
+  <path class="line" d="M892 691 H978"/>
+  <text class="lineLabel" x="907" y="682">cache / inbox / stream access</text>
+
+  <path class="line dash" d="M580 644 H940 V548 H978"/>
+  <text class="lineLabel" x="708" y="534">FeedService reads cache / inbox / exposure</text>
+
+  <path class="line dash" d="M580 620 H960 V246 H978"/>
+  <text class="lineLabel" x="742" y="232">FeedService / UserService pull from MySQL</text>
+
+  <path class="line dash" d="M580 516 H956 V664 H978"/>
+  <text class="lineLabel" x="722" y="652">PostService publishes lifecycle events</text>
+
+  <path class="line dash" d="M580 580 H934 V578 H978"/>
+  <text class="lineLabel" x="708" y="566">FollowService cleans inbox on unfollow</text>
+
+  <path class="line" d="M1210 664 H1298 V236"/>
+  <text class="lineLabel" x="1224" y="648">consume stream events</text>
+
+  <path class="line" d="M1418 270 V286"/>
+  <path class="line" d="M1418 338 V354"/>
+  <path class="line" d="M1418 338 V438"/>
+  <path class="line" d="M1418 338 V506"/>
+
+  <path class="line" d="M1298 388 H1236"/>
+  <text class="lineLabel" x="1246" y="378">fanout / cleanup inbox</text>
+
+  <path class="line" d="M1298 464 H1236"/>
+  <text class="lineLabel" x="1246" y="454">invalidate home feed cache</text>
+
+  <path class="line" d="M1298 544 H1236"/>
+  <text class="lineLabel" x="1246" y="534">retry counters and DLQ</text>
+
+  <path class="line" d="M1298 312 H1236 V246"/>
+  <text class="lineLabel" x="1246" y="232">load followers from MySQL</text>
+</svg>

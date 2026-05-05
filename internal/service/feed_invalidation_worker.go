@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -19,6 +20,10 @@ type workerFeedInboxFanout interface {
 	FanoutPostToFollowers(ctx context.Context, followerIDs []int64, postID int64, occurredAt int64) error
 }
 
+type workerFeedInboxCleanup interface {
+	RemovePostFromFollowers(ctx context.Context, followerIDs []int64, postID int64) error
+}
+
 type PostCreatedEvent struct {
 	StreamID     string
 	AuthorUserID int64
@@ -34,6 +39,7 @@ type FeedInvalidationWorker struct {
 	feedInvalidator workerFeedCacheInvalidator
 	hybridPolicy    *FeedHybridPolicy
 	inboxFanout     workerFeedInboxFanout
+	inboxCleanup    workerFeedInboxCleanup
 }
 
 const defaultFollowerInvalidationWorkers = 20
@@ -64,15 +70,25 @@ func (w *FeedInvalidationWorker) WithInboxFanout(inboxFanout workerFeedInboxFano
 	return w
 }
 
+func (w *FeedInvalidationWorker) WithInboxCleanup(inboxCleanup workerFeedInboxCleanup) *FeedInvalidationWorker {
+	w.inboxCleanup = inboxCleanup
+	return w
+}
+
 func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, event PostLifecycleEvent) error {
-	return w.handlePostLifecycleEvent(ctx, event, true)
+	return w.handlePostLifecycleEvent(ctx, event, true, false)
 }
 
 func (w *FeedInvalidationWorker) HandlePostDeletedEvent(ctx context.Context, event PostLifecycleEvent) error {
-	return w.handlePostLifecycleEvent(ctx, event, false)
+	return w.handlePostLifecycleEvent(ctx, event, false, true)
 }
 
-func (w *FeedInvalidationWorker) handlePostLifecycleEvent(ctx context.Context, event PostLifecycleEvent, allowInboxFanout bool) error {
+func (w *FeedInvalidationWorker) handlePostLifecycleEvent(
+	ctx context.Context,
+	event PostLifecycleEvent,
+	allowInboxFanout bool,
+	allowInboxCleanup bool,
+) error {
 	authorUserID := event.AuthorUserID
 	if authorUserID <= 0 {
 		return nil
@@ -109,6 +125,17 @@ func (w *FeedInvalidationWorker) handlePostLifecycleEvent(ctx context.Context, e
 		})
 		if err := w.inboxFanout.FanoutPostToFollowers(fanoutCtx, followerIDs, event.PostID, event.OccurredAt); err != nil {
 			return fmt.Errorf("push inbox fanout failed for post_id=%d: %w", event.PostID, err)
+		}
+	}
+	var cleanupErr error
+	if allowInboxCleanup && w.inboxCleanup != nil && event.PostID > 0 {
+		cleanupCtx := withFeedEventLogFields(ctx, feedEventLogFields{
+			StreamID:     event.StreamID,
+			AuthorUserID: event.AuthorUserID,
+			PostID:       event.PostID,
+		})
+		if err := w.inboxCleanup.RemovePostFromFollowers(cleanupCtx, followerIDs, event.PostID); err != nil {
+			cleanupErr = fmt.Errorf("cleanup deleted post from inboxes failed for post_id=%d: %w", event.PostID, err)
 		}
 	}
 
@@ -154,13 +181,13 @@ func (w *FeedInvalidationWorker) handlePostLifecycleEvent(ctx context.Context, e
 	wg.Wait()
 
 	if len(failedFollowerIDs) > 0 {
-		return fmt.Errorf(
+		return errors.Join(cleanupErr, fmt.Errorf(
 			"invalidate home feed failed for %d follower(s), first_failed_follower_id=%d: %w",
 			len(failedFollowerIDs),
 			failedFollowerIDs[0],
 			firstErr,
-		)
+		))
 	}
 
-	return nil
+	return cleanupErr
 }

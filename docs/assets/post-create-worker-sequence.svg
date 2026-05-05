@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1360" viewBox="0 0 1800 1360" role="img" aria-labelledby="title desc">
+  <title id="title">Post Create to Worker Sequence</title>
+  <desc id="desc">Sequence diagram for post creation, event publish, worker consumption, fanout, cache invalidation, retry and DLQ.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 42px; font-weight: 800; fill: #18181b; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .region-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #1f2937; }
+      .header { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #ffffff; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; fill: #f8fafc; }
+      .step { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 19px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #374151; }
+      .card { fill: #ffffff; stroke: #222222; stroke-width: 2; }
+      .sync { fill: #fff4dd; stroke: #d6a646; stroke-width: 2; }
+      .async { fill: #eef4ff; stroke: #7f9fd9; stroke-width: 2; }
+      .alt { fill: #f8fafc; stroke: #9ca3af; stroke-width: 1.8; stroke-dasharray: 10 8; }
+      .lifeline { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 10 8; }
+      .msg { stroke: #222222; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .reply { stroke: #6b7280; stroke-width: 2.5; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1360"/>
+
+  <text class="title" x="64" y="78">发帖到 Worker 的完整时序</text>
+  <text class="subtitle" x="64" y="116">同步主链路只保证帖子落库；推送 inbox、失效粉丝 feed 缓存、重试与 DLQ 都在异步链路里完成。</text>
+
+  <rect class="sync" x="48" y="160" width="1704" height="560" rx="24" ry="24"/>
+  <text class="region-title" x="78" y="202">同步主链路：`POST /api/v1/posts`</text>
+
+  <rect class="async" x="48" y="760" width="1704" height="520" rx="24" ry="24"/>
+  <text class="region-title" x="78" y="802">异步链路：Redis Stream -> Worker -> Inbox / Cache / Retry / DLQ</text>
+
+  <rect x="80" y="230" width="180" height="76" rx="18" ry="18" fill="#6b4f3b"/>
+  <text class="header" x="126" y="276">Client</text>
+
+  <rect x="350" y="230" width="200" height="76" rx="18" ry="18" fill="#8b5e34"/>
+  <text class="header" x="394" y="268">Gin Handler</text>
+  <text class="small" x="392" y="292">`PostHandler.Create`</text>
+
+  <rect x="660" y="230" width="210" height="76" rx="18" ry="18" fill="#d39200"/>
+  <text class="header" x="700" y="268">PostService</text>
+  <text class="small" x="701" y="292">`PostService.Create`</text>
+
+  <rect x="980" y="230" width="180" height="76" rx="18" ry="18" fill="#4f8b66"/>
+  <text class="header" x="1038" y="276">MySQL</text>
+
+  <rect x="1260" y="230" width="230" height="76" rx="18" ry="18" fill="#cb6d3d"/>
+  <text class="header" x="1316" y="268">Redis</text>
+  <text class="small" x="1286" y="292">cache / stream / inbox / retry / DLQ</text>
+
+  <rect x="1560" y="230" width="180" height="76" rx="18" ry="18" fill="#5c7cbe"/>
+  <text class="header" x="1596" y="268">Worker</text>
+  <text class="small" x="1590" y="292">`cmd/worker`</text>
+
+  <line class="lifeline" x1="170" y1="306" x2="170" y2="1248"/>
+  <line class="lifeline" x1="450" y1="306" x2="450" y2="1248"/>
+  <line class="lifeline" x1="765" y1="306" x2="765" y2="1248"/>
+  <line class="lifeline" x1="1070" y1="306" x2="1070" y2="1248"/>
+  <line class="lifeline" x1="1375" y1="306" x2="1375" y2="1248"/>
+  <line class="lifeline" x1="1650" y1="306" x2="1650" y2="1248"/>
+
+  <path class="msg" d="M170 360 H450"/>
+  <text class="step" x="214" y="348">1. `POST /api/v1/posts` + JWT</text>
+
+  <path class="msg" d="M450 430 H765"/>
+  <text class="step" x="518" y="418">2. 参数校验后调用 `Create(req)`</text>
+
+  <path class="msg" d="M765 500 H1070"/>
+  <text class="step" x="812" y="488">3. `INSERT posts(status=published)`</text>
+
+  <path class="reply" d="M1070 570 H765"/>
+  <text class="step" x="842" y="558">4. 返回 `post_id / created_at`</text>
+
+  <path class="msg" d="M765 640 H1375"/>
+  <text class="step" x="842" y="628">5. Best-effort: 失效作者自己的 Home Feed 缓存</text>
+
+  <path class="msg" d="M765 710 H1375"/>
+  <text class="step" x="836" y="698">6. Best-effort: `XADD feed:invalidation:events`</text>
+
+  <path class="reply" d="M765 780 H450"/>
+  <text class="step" x="530" y="768">7. 组装 `PostResult` 返回 Handler</text>
+
+  <path class="reply" d="M450 850 H170"/>
+  <text class="step" x="246" y="838">8. `200 success`</text>
+
+  <rect class="card" x="1110" y="360" width="560" height="152" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="1140" y="402">同步链路设计要点</text>
+  <text class="note" x="1140" y="438">- 只要 MySQL 落库成功，请求就可以返回成功</text>
+  <text class="note" x="1140" y="470">- Redis 失效缓存 / 发布事件失败，不回滚主写入</text>
+  <text class="note" x="1140" y="502">- 这样可以把“核心写入”和“异步增强能力”解耦</text>
+
+  <rect class="card" x="92" y="884" width="324" height="94" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="122" y="924">请求已结束</text>
+  <text class="note" x="122" y="956">下面的处理发生在后台 worker，用户此时已经拿到发帖成功响应。</text>
+
+  <path class="msg" d="M1650 1020 H1375"/>
+  <text class="step" x="1420" y="1008">9. `XREADGROUP` / `XAUTOCLAIM` 取消息</text>
+
+  <path class="reply" d="M1375 1090 H1650"/>
+  <text class="step" x="1418" y="1078">10. 返回 event: `type / author_id / post_id / occurred_at`</text>
+
+  <path class="msg" d="M1650 1160 H1070"/>
+  <text class="step" x="1248" y="1148">11. `ListFollowerUserIDs(author_id)`</text>
+
+  <path class="reply" d="M1070 1230 H1650"/>
+  <text class="step" x="1238" y="1218">12. follower IDs + follower count</text>
+
+  <rect class="alt" x="982" y="930" width="676" height="298" rx="18" ry="18"/>
+  <text class="note-title" x="1014" y="968">分流与处理规则</text>
+  <text class="note" x="1014" y="1006">A. `follower_count &lt;= push_follower_threshold`</text>
+  <text class="note" x="1044" y="1038">- `push_and_pull`</text>
+  <text class="note" x="1044" y="1070">- 把 `post_id` fanout 到粉丝 inbox (`ZADD` + `TRIM`)</text>
+  <text class="note" x="1044" y="1102">- 同时失效粉丝 `feed:home:*` 缓存</text>
+  <text class="note" x="1014" y="1146">B. `follower_count &gt; push_follower_threshold`</text>
+  <text class="note" x="1044" y="1178">- `pull_only`</text>
+  <text class="note" x="1044" y="1210">- 不写粉丝 inbox，只失效粉丝 feed 缓存</text>
+
+  <path class="msg" d="M1650 1284 H1375"/>
+  <text class="step" x="1394" y="1272">13. 小作者时：写粉丝 inbox；大作者时跳过</text>
+
+  <path class="msg" d="M1650 1324 H1375"/>
+  <text class="step" x="1412" y="1312">14. 所有模式都失效粉丝 Home Feed 缓存</text>
+
+  <rect class="card" x="84" y="1130" width="740" height="96" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="116" y="1170">失败处理</text>
+  <text class="note" x="116" y="1202">- handler 失败: `INCR feed:invalidation:retry:{stream_id}`</text>
+  <text class="note" x="430" y="1202">- 达到上限后: `XADD feed:invalidation:dlq`，成功后再 `XACK` 原消息</text>
+
+  <rect class="card" x="1088" y="1128" width="582" height="96" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="1120" y="1168">成功收尾</text>
+  <text class="note" x="1120" y="1200">15. worker 处理成功后，对主流消息执行 `XACK`，并清理 retry counter。</text>
+</svg>

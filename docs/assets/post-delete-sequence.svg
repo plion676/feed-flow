@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="1360" viewBox="0 0 1840 1360" role="img" aria-labelledby="title desc">
+  <title id="title">Post Delete Sequence</title>
+  <desc id="desc">Sequence diagram for post delete, publish delete event, worker cleanup follower inbox and invalidate caches.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 40px; font-weight: 800; fill: #18181b; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .header { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #ffffff; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; fill: #f8fafc; }
+      .step { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #374151; }
+      .block { fill: #fff4dd; stroke: #d6a646; stroke-width: 2; }
+      .block2 { fill: #eef4ff; stroke: #7f9fd9; stroke-width: 2; }
+      .card { fill: #ffffff; stroke: #222222; stroke-width: 2; }
+      .lifeline { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 10 8; }
+      .msg { stroke: #222222; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .reply { stroke: #6b7280; stroke-width: 2.4; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1840" height="1360"/>
+  <text class="title" x="64" y="76">删帖与异步清理时序</text>
+  <text class="subtitle" x="64" y="114">删帖先把帖子状态改为 deleted，再通过异步事件清理粉丝 inbox，并失效相关 feed 缓存。</text>
+
+  <rect class="block" x="48" y="156" width="1744" height="508" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="198">阶段 1：同步删帖主链路</text>
+
+  <rect class="block2" x="48" y="704" width="1744" height="580" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="746">阶段 2：worker 清理粉丝 inbox 与 feed cache</text>
+
+  <rect x="72" y="228" width="180" height="76" rx="18" ry="18" fill="#6b4f3b"/>
+  <text class="header" x="118" y="274">Client</text>
+  <rect x="320" y="228" width="210" height="76" rx="18" ry="18" fill="#8b5e34"/>
+  <text class="header" x="370" y="266">PostHandler</text>
+  <text class="small" x="396" y="290">delete</text>
+  <rect x="608" y="228" width="220" height="76" rx="18" ry="18" fill="#d39200"/>
+  <text class="header" x="654" y="266">PostService</text>
+  <rect x="904" y="228" width="206" height="76" rx="18" ry="18" fill="#4f8b66"/>
+  <text class="header" x="956" y="274">MySQL</text>
+  <rect x="1186" y="228" width="206" height="76" rx="18" ry="18" fill="#cb6d3d"/>
+  <text class="header" x="1238" y="274">Redis</text>
+  <rect x="1468" y="228" width="206" height="76" rx="18" ry="18" fill="#5c7cbe"/>
+  <text class="header" x="1520" y="274">Worker</text>
+
+  <line class="lifeline" x1="162" y1="304" x2="162" y2="1244"/>
+  <line class="lifeline" x1="425" y1="304" x2="425" y2="1244"/>
+  <line class="lifeline" x1="718" y1="304" x2="718" y2="1244"/>
+  <line class="lifeline" x1="1007" y1="304" x2="1007" y2="1244"/>
+  <line class="lifeline" x1="1289" y1="304" x2="1289" y2="1244"/>
+  <line class="lifeline" x1="1571" y1="304" x2="1571" y2="1244"/>
+
+  <path class="msg" d="M162 360 H425"/>
+  <text class="step" x="216" y="348">1. `DELETE /api/v1/posts/:id`</text>
+  <path class="msg" d="M425 430 H718"/>
+  <text class="step" x="492" y="418">2. `PostService.Delete(userID, postID)`</text>
+  <path class="msg" d="M718 500 H1007"/>
+  <text class="step" x="776" y="488">3. 先查帖子是否存在、是否已发布、是否属于当前作者</text>
+  <path class="msg" d="M718 570 H1007"/>
+  <text class="step" x="800" y="558">4. `UPDATE posts SET status=deleted`</text>
+  <path class="msg" d="M718 640 H1289"/>
+  <text class="step" x="846" y="628">5. Best-effort: 失效作者自己的 Home Feed 缓存</text>
+  <path class="msg" d="M718 710 H1289"/>
+  <text class="step" x="830" y="698">6. Best-effort: `PublishPostDeletedEvent(author_id, post_id)`</text>
+  <path class="reply" d="M1289 780 H162"/>
+  <text class="step" x="700" y="768">7. 返回 `deleted=true`</text>
+
+  <rect class="card" x="1410" y="416" width="314" height="176" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="1442" y="456">同步删帖的关键点</text>
+  <text class="note" x="1442" y="492">- 不是物理删除，而是状态改为 deleted</text>
+  <text class="note" x="1442" y="524">- 所以读路径天然能先跳过 deleted 帖子</text>
+  <text class="note" x="1442" y="556">- 异步 cleanup 负责把 inbox 和缓存修干净</text>
+
+  <path class="msg" d="M1571 872 H1289"/>
+  <text class="step" x="1330" y="860">8. worker 从 Stream 读到 `post_deleted` 事件</text>
+  <path class="msg" d="M1571 942 H1007"/>
+  <text class="step" x="1210" y="930">9. 查询粉丝列表</text>
+  <path class="reply" d="M1007 1012 H1571"/>
+  <text class="step" x="1212" y="1000">10. follower IDs</text>
+  <path class="msg" d="M1571 1082 H1289"/>
+  <text class="step" x="1332" y="1070">11. `RemovePostFromFollowers(followerIDs, postID)`</text>
+  <path class="msg" d="M1571 1152 H1289"/>
+  <text class="step" x="1318" y="1140">12. 并发失效所有粉丝的 Home Feed 缓存</text>
+
+  <rect class="card" x="98" y="918" width="612" height="226" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="130" y="958">删除型 cleanup 内部做什么</text>
+  <text class="note" x="130" y="994">- 批量或逐个调用 `RemovePostFromInbox(userID, postID)`</text>
+  <text class="note" x="130" y="1026">- 目标是把这个被删帖的 `post_id` 从所有粉丝 inbox 移除</text>
+  <text class="note" x="130" y="1058">- 如果 cleanup 延迟，读路径因为只回表 published 帖子，也会跳过它</text>
+  <text class="note" x="130" y="1090">- 成功后 worker `XACK`；失败则走 retry / DLQ</text>
+</svg>

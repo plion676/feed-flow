@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="1240" viewBox="0 0 1840 1240" role="img" aria-labelledby="title desc">
+  <title id="title">DLQ Sequence</title>
+  <desc id="desc">Sequence diagram for DLQ list and replay flow with access control.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 40px; font-weight: 800; fill: #18181b; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .header { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #ffffff; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; fill: #f8fafc; }
+      .step { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #374151; }
+      .block { fill: #eef4ff; stroke: #7f9fd9; stroke-width: 2; }
+      .block2 { fill: #fff4dd; stroke: #d6a646; stroke-width: 2; }
+      .card { fill: #ffffff; stroke: #222222; stroke-width: 2; }
+      .lifeline { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 10 8; }
+      .msg { stroke: #222222; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .reply { stroke: #6b7280; stroke-width: 2.4; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1840" height="1240"/>
+  <text class="title" x="64" y="76">DLQ 查询与重放时序</text>
+  <text class="subtitle" x="64" y="114">用于处理多次失败后进入 `feed:invalidation:dlq` 的消息，支持查询和按条重放回主流。</text>
+
+  <rect class="block" x="48" y="156" width="1744" height="388" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="198">阶段 1：查询 DLQ</text>
+
+  <rect class="block2" x="48" y="584" width="1744" height="548" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="626">阶段 2：重放一条 DLQ 消息</text>
+
+  <rect x="72" y="228" width="180" height="76" rx="18" ry="18" fill="#6b4f3b"/>
+  <text class="header" x="118" y="274">Client</text>
+  <rect x="320" y="228" width="230" height="76" rx="18" ry="18" fill="#8b5e34"/>
+  <text class="header" x="354" y="266">FeedDLQHandler</text>
+  <text class="small" x="360" y="290">list / replay</text>
+  <rect x="620" y="228" width="240" height="76" rx="18" ry="18" fill="#d39200"/>
+  <text class="header" x="642" y="266">DLQ Access / Service</text>
+  <text class="small" x="674" y="290">authorize + operate</text>
+  <rect x="940" y="228" width="206" height="76" rx="18" ry="18" fill="#4f8b66"/>
+  <text class="header" x="992" y="274">MySQL</text>
+  <rect x="1222" y="228" width="206" height="76" rx="18" ry="18" fill="#cb6d3d"/>
+  <text class="header" x="1274" y="274">Redis</text>
+  <rect x="1504" y="228" width="220" height="76" rx="18" ry="18" fill="#5c7cbe"/>
+  <text class="header" x="1560" y="274">Worker</text>
+  <text class="small" x="1528" y="290">later consumes replayed event</text>
+
+  <line class="lifeline" x1="162" y1="304" x2="162" y2="1094"/>
+  <line class="lifeline" x1="435" y1="304" x2="435" y2="1094"/>
+  <line class="lifeline" x1="740" y1="304" x2="740" y2="1094"/>
+  <line class="lifeline" x1="1043" y1="304" x2="1043" y2="1094"/>
+  <line class="lifeline" x1="1325" y1="304" x2="1325" y2="1094"/>
+  <line class="lifeline" x1="1614" y1="304" x2="1614" y2="1094"/>
+
+  <path class="msg" d="M162 360 H435"/>
+  <text class="step" x="222" y="348">1. `GET /api/v1/feed/dlq?limit=`</text>
+  <path class="msg" d="M435 430 H740"/>
+  <text class="step" x="494" y="418">2. `AuthorizeList(userID)`</text>
+  <path class="msg" d="M740 500 H1043"/>
+  <text class="step" x="788" y="488">3. 查 `feed_dlq_operators` 判断角色 / 状态</text>
+  <path class="msg" d="M435 570 H740"/>
+  <text class="step" x="492" y="558">4. `ListEvents(limit)`</text>
+  <path class="msg" d="M740 640 H1325"/>
+  <text class="step" x="886" y="628">5. `XREVRANGE feed:invalidation:dlq`</text>
+  <path class="reply" d="M1325 710 H162"/>
+  <text class="step" x="686" y="698">6. 返回 DLQ items</text>
+
+  <rect class="card" x="1460" y="382" width="288" height="170" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="1492" y="422">权限要求</text>
+  <text class="note" x="1492" y="458">- `operator` / `admin` 可查看</text>
+  <text class="note" x="1492" y="490">- 非活跃或无记录用户被拒绝</text>
+
+  <path class="msg" d="M162 826 H435"/>
+  <text class="step" x="208" y="814">7. `POST /api/v1/feed/dlq/replay`</text>
+  <path class="msg" d="M435 896 H740"/>
+  <text class="step" x="492" y="884">8. `AuthorizeReplay(userID)`</text>
+  <path class="msg" d="M740 966 H1043"/>
+  <text class="step" x="792" y="954">9. 只有 `admin` 可重放</text>
+  <path class="msg" d="M435 1036 H740"/>
+  <text class="step" x="490" y="1024">10. `ReplayEvent(dlq_message_id, deleteAfterReplay)`</text>
+  <path class="msg" d="M740 1106 H1325"/>
+  <text class="step" x="818" y="1094">11. 读该条 DLQ，做 replay lock，`XADD` 回主流</text>
+  <path class="reply" d="M1325 1176 H1614"/>
+  <text class="step" x="1362" y="1164">12. replay 后的主流消息后续由 worker 正常消费</text>
+
+  <rect class="card" x="92" y="940" width="560" height="170" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="124" y="980">Replay 关键点</text>
+  <text class="note" x="124" y="1016">- 用 replay lock 防止同一条 DLQ 被重复回放</text>
+  <text class="note" x="124" y="1048">- 回放本质是把 payload 再 `XADD` 回 `feed:invalidation:events`</text>
+  <text class="note" x="124" y="1080">- 可选 `delete_after_replay=true` 删除 DLQ 原消息</text>
+</svg>

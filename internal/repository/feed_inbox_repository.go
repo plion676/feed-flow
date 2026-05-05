@@ -12,7 +12,9 @@ import (
 // FeedInboxRepository stores push-lane inbox items in Redis ZSET.
 // Key: feed:inbox:{user_id}
 // Score: occurred_at unix seconds (newer is larger)
-// Member: post_id string, so repeated fanout of the same post is naturally idempotent in ZSET.
+// Member: post_id string.
+// Repeated fanout of the same post keeps the original score via ZADD NX, so retry-safe writes
+// do not reorder old posts toward the head of the inbox.
 type FeedInboxRepository struct {
 	client *redis.Client
 }
@@ -31,10 +33,50 @@ func (r *FeedInboxRepository) AddPostToInbox(ctx context.Context, userID int64, 
 		occurredAt = time.Now().Unix()
 	}
 
-	return r.client.ZAdd(ctx, buildFeedInboxKey(userID), redis.Z{
-		Score:  float64(occurredAt),
-		Member: strconv.FormatInt(postID, 10),
+	return r.client.ZAddArgs(ctx, buildFeedInboxKey(userID), redis.ZAddArgs{
+		NX: true,
+		Members: []redis.Z{
+			{
+				Score:  float64(occurredAt),
+				Member: strconv.FormatInt(postID, 10),
+			},
+		},
 	}).Err()
+}
+
+func (r *FeedInboxRepository) RemovePostFromInbox(ctx context.Context, userID int64, postID int64) error {
+	if userID <= 0 || postID <= 0 {
+		return fmt.Errorf("user_id and post_id must be positive")
+	}
+
+	return r.client.ZRem(ctx, buildFeedInboxKey(userID), strconv.FormatInt(postID, 10)).Err()
+}
+
+func (r *FeedInboxRepository) RemovePostsFromInbox(ctx context.Context, userID int64, postIDs []int64) error {
+	if userID <= 0 {
+		return fmt.Errorf("user_id must be positive")
+	}
+	if len(postIDs) == 0 {
+		return nil
+	}
+
+	members := make([]any, 0, len(postIDs))
+	seen := make(map[int64]struct{}, len(postIDs))
+	for _, postID := range postIDs {
+		if postID <= 0 {
+			continue
+		}
+		if _, ok := seen[postID]; ok {
+			continue
+		}
+		seen[postID] = struct{}{}
+		members = append(members, strconv.FormatInt(postID, 10))
+	}
+	if len(members) == 0 {
+		return nil
+	}
+
+	return r.client.ZRem(ctx, buildFeedInboxKey(userID), members...).Err()
 }
 
 func (r *FeedInboxRepository) TrimInbox(ctx context.Context, userID int64, maxItems int64) error {
@@ -70,9 +112,14 @@ func (r *FeedInboxRepository) BatchAddPostToInboxes(
 				continue
 			}
 			key := buildFeedInboxKey(userID)
-			pipe.ZAdd(ctx, key, redis.Z{
-				Score:  float64(occurredAt),
-				Member: member,
+			pipe.ZAddArgs(ctx, key, redis.ZAddArgs{
+				NX: true,
+				Members: []redis.Z{
+					{
+						Score:  float64(occurredAt),
+						Member: member,
+					},
+				},
 			})
 			if maxItems > 0 {
 				pipe.ZRemRangeByRank(ctx, key, 0, -maxItems-1)
@@ -82,6 +129,31 @@ func (r *FeedInboxRepository) BatchAddPostToInboxes(
 	})
 	if err != nil {
 		return fmt.Errorf("pipeline fanout write failed: %w", err)
+	}
+	return nil
+}
+
+func (r *FeedInboxRepository) BatchRemovePostFromInboxes(
+	ctx context.Context,
+	userIDs []int64,
+	postID int64,
+) error {
+	if postID <= 0 {
+		return fmt.Errorf("post_id must be positive")
+	}
+
+	member := strconv.FormatInt(postID, 10)
+	_, err := r.client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, userID := range userIDs {
+			if userID <= 0 {
+				continue
+			}
+			pipe.ZRem(ctx, buildFeedInboxKey(userID), member)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("pipeline inbox cleanup failed: %w", err)
 	}
 	return nil
 }

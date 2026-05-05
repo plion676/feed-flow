@@ -60,6 +60,7 @@ type feedMixPageResult struct {
 	nextPullCursor      int64
 	inboxPendingPostIDs []int64
 	pullPendingPostIDs  []int64
+	recentAuthorIDs     []int64
 }
 
 func defaultFeedMixPolicy() feedMixPolicy {
@@ -99,7 +100,7 @@ func newFeedMixPolicy(options FeedMixOptions) feedMixPolicy {
 }
 
 func mixFeedPostsForPage(inboxPosts []*model.Post, pullPosts []*model.Post, pageLimit int, policy feedMixPolicy) []*model.Post {
-	page := policy.mixPageForCursor(inboxPosts, pullPosts, pageLimit, 0, 0)
+	page := policy.mixPageForCursor(inboxPosts, pullPosts, pageLimit, 0, 0, nil)
 	result := append([]*model.Post{}, page.visible...)
 	if page.probe != nil {
 		result = append(result, page.probe)
@@ -113,9 +114,10 @@ func mixFeedPageForCursor(
 	pageLimit int,
 	inboxCursor int64,
 	pullCursor int64,
+	recentAuthorIDs []int64,
 	policy feedMixPolicy,
 ) feedMixPageResult {
-	return policy.mixPageForCursor(inboxPosts, pullPosts, pageLimit, inboxCursor, pullCursor)
+	return policy.mixPageForCursor(inboxPosts, pullPosts, pageLimit, inboxCursor, pullCursor, recentAuthorIDs)
 }
 
 func (p feedMixPolicy) mixPageForCursor(
@@ -124,6 +126,7 @@ func (p feedMixPolicy) mixPageForCursor(
 	pageLimit int,
 	inboxCursor int64,
 	pullCursor int64,
+	recentAuthorIDs []int64,
 ) feedMixPageResult {
 	if pageLimit <= 0 {
 		return feedMixPageResult{}
@@ -140,9 +143,9 @@ func (p feedMixPolicy) mixPageForCursor(
 	seen := make(map[int64]struct{}, pageLimit)
 	pushUsed := 0
 	pullUsed := 0
-	lastAuthorID := int64(0)
-	authorStreak := 0
-	authorHistory := make([]int64, 0, pageLimit)
+	recentAuthorHistoryLimit := p.resolveRecentAuthorHistoryLimit()
+	authorHistory := trimRecentAuthorIDs(recentAuthorIDs, recentAuthorHistoryLimit)
+	lastAuthorID, authorStreak := resolveRecentAuthorState(authorHistory)
 	lastSource := feedMixSource("")
 	sourceStreak := 0
 
@@ -192,7 +195,7 @@ func (p feedMixPolicy) mixPageForCursor(
 			lastAuthorID = pick.candidate.post.UserID
 			authorStreak = 1
 		}
-		authorHistory = append(authorHistory, pick.candidate.post.UserID)
+		authorHistory = appendRecentAuthorID(authorHistory, pick.candidate.post.UserID, recentAuthorHistoryLimit)
 		if source == lastSource {
 			sourceStreak++
 		} else {
@@ -229,6 +232,7 @@ func (p feedMixPolicy) mixPageForCursor(
 		nextPullCursor:      nextPullCursor,
 		inboxPendingPostIDs: collectFeedMixPendingIDs(inboxCandidates, seen),
 		pullPendingPostIDs:  collectFeedMixPendingIDs(pullCandidates, seen),
+		recentAuthorIDs:     trimRecentAuthorIDs(authorHistory, recentAuthorHistoryLimit),
 	}
 }
 
@@ -386,6 +390,74 @@ func isAuthorInRecentHistory(authorID int64, authorHistory []int64, authorCooldo
 		}
 	}
 	return false
+}
+
+func (p feedMixPolicy) resolveRecentAuthorHistoryLimit() int {
+	limit := p.maxConsecutiveAuthor
+	if p.authorCooldownWindow > limit {
+		limit = p.authorCooldownWindow
+	}
+	if limit < 0 {
+		return 0
+	}
+	return limit
+}
+
+func trimRecentAuthorIDs(authorIDs []int64, limit int) []int64 {
+	if limit <= 0 || len(authorIDs) == 0 {
+		return nil
+	}
+
+	start := len(authorIDs) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	trimmed := make([]int64, 0, len(authorIDs)-start)
+	for i := start; i < len(authorIDs); i++ {
+		if authorIDs[i] <= 0 {
+			continue
+		}
+		trimmed = append(trimmed, authorIDs[i])
+	}
+	if len(trimmed) == 0 {
+		return nil
+	}
+	return trimmed
+}
+
+func appendRecentAuthorID(authorHistory []int64, authorID int64, limit int) []int64 {
+	if authorID <= 0 || limit <= 0 {
+		return nil
+	}
+
+	authorHistory = append(authorHistory, authorID)
+	if len(authorHistory) <= limit {
+		return authorHistory
+	}
+
+	copy(authorHistory, authorHistory[len(authorHistory)-limit:])
+	return authorHistory[:limit]
+}
+
+func resolveRecentAuthorState(authorHistory []int64) (int64, int) {
+	if len(authorHistory) == 0 {
+		return 0, 0
+	}
+
+	lastAuthorID := authorHistory[len(authorHistory)-1]
+	if lastAuthorID <= 0 {
+		return 0, 0
+	}
+
+	authorStreak := 0
+	for i := len(authorHistory) - 1; i >= 0; i-- {
+		if authorHistory[i] != lastAuthorID {
+			break
+		}
+		authorStreak++
+	}
+	return lastAuthorID, authorStreak
 }
 
 func chooseFeedMixPick(

@@ -58,9 +58,23 @@ type fakeFollowFeedInvalidator struct {
 	err       error
 }
 
+type fakeFollowInboxCleanup struct {
+	called          int
+	gotUserID       int64
+	gotAuthorUserID int64
+	err             error
+}
+
 func (f *fakeFollowFeedInvalidator) InvalidateHomeFeed(_ context.Context, userID int64) error {
 	f.called++
 	f.gotUserID = userID
+	return f.err
+}
+
+func (f *fakeFollowInboxCleanup) RemoveAuthorPostsFromInbox(_ context.Context, userID int64, authorUserID int64) error {
+	f.called++
+	f.gotUserID = userID
+	f.gotAuthorUserID = authorUserID
 	return f.err
 }
 
@@ -171,9 +185,11 @@ func TestFollowServiceUnfollow(t *testing.T) {
 		targetUserID     int64
 		followRepo       *fakeFollowRepo
 		invalidator      *fakeFollowFeedInvalidator
+		inboxCleanup     *fakeFollowInboxCleanup
 		wantErr          *xerror.Error
 		wantDeleteCalled bool
 		wantInvalidate   bool
+		wantCleanup      bool
 	}{
 		{
 			name:         "bad request on self unfollow",
@@ -198,8 +214,10 @@ func TestFollowServiceUnfollow(t *testing.T) {
 			targetUserID:     2001,
 			followRepo:       &fakeFollowRepo{},
 			invalidator:      &fakeFollowFeedInvalidator{},
+			inboxCleanup:     &fakeFollowInboxCleanup{},
 			wantDeleteCalled: true,
 			wantInvalidate:   true,
+			wantCleanup:      true,
 		},
 		{
 			name:             "success even when invalidator fails",
@@ -207,8 +225,21 @@ func TestFollowServiceUnfollow(t *testing.T) {
 			targetUserID:     2001,
 			followRepo:       &fakeFollowRepo{},
 			invalidator:      &fakeFollowFeedInvalidator{err: errors.New("cache down")},
+			inboxCleanup:     &fakeFollowInboxCleanup{},
 			wantDeleteCalled: true,
 			wantInvalidate:   true,
+			wantCleanup:      true,
+		},
+		{
+			name:             "success even when inbox cleanup fails",
+			userID:           1001,
+			targetUserID:     2001,
+			followRepo:       &fakeFollowRepo{},
+			invalidator:      &fakeFollowFeedInvalidator{},
+			inboxCleanup:     &fakeFollowInboxCleanup{err: errors.New("cleanup down")},
+			wantDeleteCalled: true,
+			wantInvalidate:   true,
+			wantCleanup:      true,
 		},
 	}
 
@@ -217,7 +248,9 @@ func TestFollowServiceUnfollow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			svc := NewFollowService(tc.followRepo, &fakeFollowUserRepo{}).WithFeedCacheInvalidator(tc.invalidator)
+			svc := NewFollowService(tc.followRepo, &fakeFollowUserRepo{}).
+				WithFeedCacheInvalidator(tc.invalidator).
+				WithInboxAuthorCleanup(tc.inboxCleanup)
 			gotErr := svc.Unfollow(ctx, tc.userID, tc.targetUserID)
 
 			if gotErr != tc.wantErr {
@@ -237,6 +270,18 @@ func TestFollowServiceUnfollow(t *testing.T) {
 			}
 			if tc.wantInvalidate && tc.invalidator.gotUserID != tc.userID {
 				t.Fatalf("unexpected invalidator user id: got=%d want=%d", tc.invalidator.gotUserID, tc.userID)
+			}
+			if tc.wantCleanup && tc.inboxCleanup.called != 1 {
+				t.Fatalf("expected inbox cleanup called once, got=%d", tc.inboxCleanup.called)
+			}
+			if !tc.wantCleanup && tc.inboxCleanup != nil && tc.inboxCleanup.called != 0 {
+				t.Fatalf("expected inbox cleanup not called, got=%d", tc.inboxCleanup.called)
+			}
+			if tc.wantCleanup && tc.inboxCleanup.gotUserID != tc.userID {
+				t.Fatalf("unexpected inbox cleanup user id: got=%d want=%d", tc.inboxCleanup.gotUserID, tc.userID)
+			}
+			if tc.wantCleanup && tc.inboxCleanup.gotAuthorUserID != tc.targetUserID {
+				t.Fatalf("unexpected inbox cleanup author id: got=%d want=%d", tc.inboxCleanup.gotAuthorUserID, tc.targetUserID)
 			}
 		})
 	}

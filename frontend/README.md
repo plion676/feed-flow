@@ -1,73 +1,83 @@
-# React + TypeScript + Vite
+# Frontend Demo
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+这是一个用于演示后端能力的前端页面，风格参考“小红书式笔记流”，方便快速验证：
 
-Currently, two official plugins are available:
+- 注册 / 登录
+- 发布帖子
+- 查看关注流 / 发现流
+- 点赞 / 收藏 / 评论
+- 查看用户主页
+- 关注 / 取关
+- 浏览粉丝 / 关注列表
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+它的目标不是做完整产品，而是作为后端项目的可视化操作台。
 
-## React Compiler
+## 技术栈
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React
+- TypeScript
+- Vite
+- Ant Design
+- Axios
 
-## Expanding the ESLint configuration
+## 启动
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+在 `frontend` 目录执行：
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+默认地址：
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- `http://127.0.0.1:5173`
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## 与后端联调
+
+Vite 已在开发模式下配置代理：
+
+- `/api` -> `http://127.0.0.1:8080`
+
+因此本地联调时只需要保证后端已启动：
+
+```powershell
+go run ./cmd/server
 ```
+
+## 可配置 API 地址
+
+默认 API Base：
+
+- `/api/v1`
+
+如果你需要显式指定远端地址，可以设置：
+
+- `VITE_API_BASE`
+
+例如：
+
+```powershell
+$env:VITE_API_BASE="http://127.0.0.1:8080/api/v1"
+npm run dev
+```
+
+## 当前演示能力
+
+- 多账号本地切换
+- Feed 列表展示
+- Discover 流展示
+- 帖子详情弹窗
+- 作者主页抽屉
+- 粉丝 / 关注列表弹层
+- 点赞 / 收藏 / 评论
+- 删除自己的帖子
+
+## 适合怎么用
+
+推荐用它来做这几件事：
+
+1. 快速验证后端接口
+2. 演示 Feed 主链路
+3. 给项目增加更直观的可操作体验
+4. 调试删帖、取关、刷新、分页等行为

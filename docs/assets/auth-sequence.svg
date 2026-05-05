@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1760" height="1180" viewBox="0 0 1760 1180" role="img" aria-labelledby="title desc">
+  <title id="title">Auth Sequence</title>
+  <desc id="desc">Sequence diagram for register, login, JWT auth middleware and users me endpoint.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 40px; font-weight: 800; fill: #18181b; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .header { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #ffffff; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; fill: #f8fafc; }
+      .step { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #374151; }
+      .block { fill: #fff4dd; stroke: #d6a646; stroke-width: 2; }
+      .block2 { fill: #eef4ff; stroke: #7f9fd9; stroke-width: 2; }
+      .card { fill: #ffffff; stroke: #222222; stroke-width: 2; }
+      .lifeline { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 10 8; }
+      .msg { stroke: #222222; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .reply { stroke: #6b7280; stroke-width: 2.4; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1760" height="1180"/>
+  <text class="title" x="64" y="76">鉴权主链路时序</text>
+  <text class="subtitle" x="64" y="114">包含注册、登录、JWT 生成、JWT 校验，以及 `/users/me` 如何从中间件取当前用户。</text>
+
+  <rect class="block" x="48" y="156" width="1664" height="416" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="198">阶段 1：注册与登录</text>
+
+  <rect class="block2" x="48" y="612" width="1664" height="492" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="654">阶段 2：携带 JWT 访问受保护接口</text>
+
+  <rect x="72" y="228" width="180" height="76" rx="18" ry="18" fill="#6b4f3b"/>
+  <text class="header" x="118" y="274">Client</text>
+  <rect x="320" y="228" width="210" height="76" rx="18" ry="18" fill="#8b5e34"/>
+  <text class="header" x="366" y="266">Auth / User</text>
+  <text class="small" x="350" y="290">handlers + middleware</text>
+  <rect x="606" y="228" width="220" height="76" rx="18" ry="18" fill="#d39200"/>
+  <text class="header" x="650" y="266">Services</text>
+  <text class="small" x="632" y="290">auth + user service</text>
+  <rect x="902" y="228" width="206" height="76" rx="18" ry="18" fill="#4f8b66"/>
+  <text class="header" x="954" y="274">MySQL</text>
+  <rect x="1184" y="228" width="206" height="76" rx="18" ry="18" fill="#5c7cbe"/>
+  <text class="header" x="1228" y="266">JWT</text>
+  <text class="small" x="1218" y="290">sign / parse token</text>
+
+  <line class="lifeline" x1="162" y1="304" x2="162" y2="1060"/>
+  <line class="lifeline" x1="425" y1="304" x2="425" y2="1060"/>
+  <line class="lifeline" x1="716" y1="304" x2="716" y2="1060"/>
+  <line class="lifeline" x1="1005" y1="304" x2="1005" y2="1060"/>
+  <line class="lifeline" x1="1287" y1="304" x2="1287" y2="1060"/>
+
+  <path class="msg" d="M162 360 H425"/>
+  <text class="step" x="208" y="348">1. `POST /api/v1/auth/register`</text>
+  <path class="msg" d="M425 430 H716"/>
+  <text class="step" x="496" y="418">2. `AuthService.Register(req)`</text>
+  <path class="msg" d="M716 500 H1005"/>
+  <text class="step" x="780" y="488">3. 查 username 是否已存在</text>
+  <path class="reply" d="M1005 570 H716"/>
+  <text class="step" x="820" y="558">4. 不存在则继续</text>
+  <path class="msg" d="M716 640 H1005"/>
+  <text class="step" x="760" y="628">5. 事务内创建 `users` + `user_counts`</text>
+  <path class="reply" d="M1005 710 H425"/>
+  <text class="step" x="666" y="698">6. 返回 `user_id / username / nickname`</text>
+  <path class="reply" d="M425 780 H162"/>
+  <text class="step" x="238" y="768">7. 注册成功</text>
+
+  <path class="msg" d="M162 850 H425"/>
+  <text class="step" x="224" y="838">8. `POST /api/v1/auth/login`</text>
+  <path class="msg" d="M425 920 H716"/>
+  <text class="step" x="506" y="908">9. `AuthService.Login(req)`</text>
+  <path class="msg" d="M716 990 H1005"/>
+  <text class="step" x="796" y="978">10. 按 username 查用户并校验密码</text>
+  <path class="msg" d="M716 1060 H1287"/>
+  <text class="step" x="860" y="1048">11. `GenerateToken(user_id)`</text>
+  <path class="reply" d="M1287 1130 H162"/>
+  <text class="step" x="734" y="1118">12. 返回 `token + user info`</text>
+
+  <rect class="card" x="1410" y="254" width="254" height="164" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="1438" y="294">注册要点</text>
+  <text class="note" x="1438" y="330">- 先查重</text>
+  <text class="note" x="1438" y="362">- bcrypt hash password</text>
+  <text class="note" x="1438" y="394">- 事务创建 user 与 user_count</text>
+
+  <rect class="card" x="1410" y="442" width="254" height="140" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="1438" y="482">登录要点</text>
+  <text class="note" x="1438" y="518">- 校验密码</text>
+  <text class="note" x="1438" y="550">- JWT 内含 `user_id`</text>
+
+  <path class="msg" d="M162 708 H425"/>
+  <text class="step" x="216" y="696">13. `GET /api/v1/users/me` + `Authorization: Bearer ...`</text>
+  <path class="msg" d="M425 778 H1287"/>
+  <text class="step" x="716" y="766">14. `AuthJWT` 中间件解析并校验 token</text>
+  <path class="reply" d="M1287 848 H425"/>
+  <text class="step" x="792" y="836">15. claims 有效，则 `c.Set(current_user_id)`</text>
+  <path class="msg" d="M425 918 H716"/>
+  <text class="step" x="490" y="906">16. `CurrentUserID(c)` -> `UserService.GetMe(userID)`</text>
+  <path class="msg" d="M716 988 H1005"/>
+  <text class="step" x="806" y="976">17. `GetByID(user_id)`</text>
+  <path class="reply" d="M1005 1058 H162"/>
+  <text class="step" x="622" y="1046">18. 返回 `user_id / username / nickname / avatar / bio`</text>
+</svg>

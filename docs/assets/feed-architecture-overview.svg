@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Feed Flow System Architecture Overview</title>
+  <desc id="desc">Readable high-contrast architecture overview for Feed Flow System.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 42px; font-weight: 800; fill: #161616; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .card { fill: #ffffff; stroke: #232323; stroke-width: 2.2; }
+      .header-text { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 28px; font-weight: 800; fill: #ffffff; }
+      .item { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #4b5563; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #374151; }
+      .line { stroke: #2b2b2b; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .line-dash { stroke: #6b7280; stroke-width: 2.5; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+      .label { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #374151; }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#2b2b2b"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1600" height="900"/>
+
+  <text class="title" x="72" y="88">Feed Flow System</text>
+  <text class="subtitle" x="72" y="126">Architecture overview with clear request path, storage responsibilities, and async worker flow.</text>
+
+  <rect class="card" x="72" y="190" width="230" height="190" rx="22" ry="22"/>
+  <rect x="72" y="190" width="230" height="58" rx="22" ry="22" fill="#6b4f3b"/>
+  <rect x="72" y="226" width="230" height="22" fill="#6b4f3b"/>
+  <text class="header-text" x="106" y="228">Clients</text>
+  <text class="item" x="104" y="286">• Web Frontend</text>
+  <text class="item" x="104" y="326">• Postman / API Client</text>
+  <text class="small" x="104" y="358">发请求，查看返回结果</text>
+
+  <rect class="card" x="370" y="158" width="520" height="540" rx="26" ry="26"/>
+  <rect x="370" y="158" width="520" height="64" rx="26" ry="26" fill="#d39200"/>
+  <rect x="370" y="196" width="520" height="26" fill="#d39200"/>
+  <text class="header-text" x="406" y="201">HTTP Service</text>
+  <text class="small" x="406" y="244">Gin application in `cmd/server`</text>
+  <text class="item" x="406" y="308">• Router / Middleware</text>
+  <text class="small" x="436" y="338">JWT, request id, logger, recovery</text>
+  <text class="item" x="406" y="390">• Services</text>
+  <text class="small" x="436" y="420">Auth, User, Post, Follow, Feed, Interaction, DLQ</text>
+  <text class="item" x="406" y="472">• Repositories</text>
+  <text class="small" x="436" y="502">MySQL repos + Redis repos</text>
+  <text class="item" x="406" y="554">• Main responsibilities</text>
+  <text class="small" x="436" y="584">read feed, write post, publish stream event</text>
+  <text class="small" x="436" y="614">author filtering, cache usage, cursor token</text>
+
+  <rect class="card" x="960" y="158" width="250" height="210" rx="22" ry="22"/>
+  <rect x="960" y="158" width="250" height="58" rx="22" ry="22" fill="#4f8b66"/>
+  <rect x="960" y="194" width="250" height="22" fill="#4f8b66"/>
+  <text class="header-text" x="995" y="197">MySQL</text>
+  <text class="item" x="992" y="258">• users / user_counts</text>
+  <text class="item" x="992" y="294">• posts / follows</text>
+  <text class="item" x="992" y="330">• interactions / operators</text>
+  <text class="small" x="992" y="358">持久化源数据</text>
+
+  <rect class="card" x="960" y="430" width="250" height="268" rx="22" ry="22"/>
+  <rect x="960" y="430" width="250" height="58" rx="22" ry="22" fill="#cb6d3d"/>
+  <rect x="960" y="466" width="250" height="22" fill="#cb6d3d"/>
+  <text class="header-text" x="995" y="469">Redis</text>
+  <text class="item" x="992" y="530">• feed cache</text>
+  <text class="item" x="992" y="566">• inbox zset</text>
+  <text class="item" x="992" y="602">• exposure window</text>
+  <text class="item" x="992" y="638">• stream / retry / DLQ</text>
+  <text class="small" x="992" y="670">缓存、收件箱、异步事件</text>
+
+  <rect class="card" x="1280" y="250" width="260" height="340" rx="22" ry="22"/>
+  <rect x="1280" y="250" width="260" height="58" rx="22" ry="22" fill="#5c7cbe"/>
+  <rect x="1280" y="286" width="260" height="22" fill="#5c7cbe"/>
+  <text class="header-text" x="1312" y="289">Async Worker</text>
+  <text class="small" x="1312" y="334">`cmd/worker`</text>
+  <text class="item" x="1312" y="388">• XREADGROUP / XAUTOCLAIM</text>
+  <text class="item" x="1312" y="430">• push fanout / inbox cleanup</text>
+  <text class="item" x="1312" y="472">• feed cache invalidation</text>
+  <text class="item" x="1312" y="514">• retry backoff / ACK / DLQ</text>
+  <text class="small" x="1312" y="552">处理异步一致性和可靠性</text>
+
+  <path class="line" d="M302 285 H370"/>
+  <text class="label" x="316" y="274">HTTP request</text>
+
+  <path class="line" d="M890 260 H960"/>
+  <text class="label" x="898" y="246">DB read / write</text>
+
+  <path class="line" d="M890 550 H960"/>
+  <text class="label" x="900" y="536">cache / inbox / event publish</text>
+
+  <path class="line" d="M1210 564 H1280"/>
+  <text class="label" x="1220" y="548">consume stream</text>
+
+  <path class="line-dash" d="M1280 350 H1245 V260 H1210"/>
+  <text class="label" x="1216" y="246">load follower / post state when needed</text>
+
+  <path class="line-dash" d="M1410 590 V728 H1085 V698"/>
+  <text class="label" x="1180" y="752">write inbox cleanup, retry count, DLQ state back</text>
+
+  <rect class="card" x="72" y="760" width="1468" height="96" rx="22" ry="22"/>
+  <text class="note-title" x="106" y="816">Core idea</text>
+  <text class="note" x="236" y="816">The HTTP service handles business flow, MySQL stores durable data, Redis accelerates feed reads and async state, and the worker keeps feed consistency in the background.</text>
+</svg>

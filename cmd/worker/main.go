@@ -55,7 +55,9 @@ func main() {
 		inboxCfg := buildInboxFanoutOptions(cfg)
 		inboxFanout := service.NewFeedInboxFanout(inboxRepo, inboxCfg.MaxItems).
 			WithBatchOptions(inboxCfg.BatchSize, inboxCfg.Workers)
-		worker = worker.WithInboxFanout(inboxFanout)
+		inboxCleanup := service.NewFeedInboxCleanup(inboxRepo).
+			WithBatchOptions(inboxCfg.BatchSize, inboxCfg.Workers)
+		worker = worker.WithInboxFanout(inboxFanout).WithInboxCleanup(inboxCleanup)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

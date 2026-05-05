@@ -1,0 +1,164 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1880" height="1560" viewBox="0 0 1880 1560" role="img" aria-labelledby="title desc">
+  <title id="title">Home Feed Read Sequence</title>
+  <desc id="desc">Sequence diagram for home feed reads with hybrid inbox plus pull, exposure filtering, mix strategy, cursor token and refresh fallback.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 42px; font-weight: 800; fill: #18181b; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .header { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #ffffff; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; fill: #f8fafc; }
+      .step { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .label { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #374151; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #374151; }
+      .card { fill: #ffffff; stroke: #222222; stroke-width: 2; }
+      .block { fill: #fff8eb; stroke: #d4a84b; stroke-width: 2; }
+      .block2 { fill: #eef4ff; stroke: #7f9fd9; stroke-width: 2; }
+      .block3 { fill: #f7efe6; stroke: #b28b68; stroke-width: 2; }
+      .block4 { fill: #fff2ea; stroke: #cb6d3d; stroke-width: 2; }
+      .alt { fill: #f8fafc; stroke: #9ca3af; stroke-width: 1.8; stroke-dasharray: 10 8; }
+      .lifeline { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 10 8; }
+      .msg { stroke: #222222; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .reply { stroke: #6b7280; stroke-width: 2.5; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1880" height="1560"/>
+
+  <text class="title" x="64" y="78">Home Feed 读取时序</text>
+  <text class="subtitle" x="64" y="116">支持缓存、Inbox + Pull 混合召回、曝光去重、混排分页 token，以及 refresh 场景下的 latest fallback。</text>
+
+  <rect class="block" x="48" y="158" width="1784" height="286" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="200">阶段 1：请求进入与游标解析</text>
+
+  <rect class="block2" x="48" y="478" width="1784" height="438" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="520">阶段 2：候选收集与过滤</text>
+
+  <rect class="block3" x="48" y="950" width="1784" height="290" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="992">阶段 3：混排、分页 token 与结果构建</text>
+
+  <rect class="block4" x="48" y="1274" width="1784" height="226" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="1316">阶段 4：缓存、曝光标记与 refresh fallback</text>
+
+  <rect x="72" y="230" width="180" height="76" rx="18" ry="18" fill="#6b4f3b"/>
+  <text class="header" x="118" y="276">Client</text>
+
+  <rect x="324" y="230" width="206" height="76" rx="18" ry="18" fill="#8b5e34"/>
+  <text class="header" x="356" y="268">FeedHandler</text>
+  <text class="small" x="350" y="292">`GetHomeFeed`</text>
+
+  <rect x="606" y="230" width="220" height="76" rx="18" ry="18" fill="#d39200"/>
+  <text class="header" x="644" y="268">FeedService</text>
+  <text class="small" x="628" y="292">`GetHomeFeed(req)`</text>
+
+  <rect x="902" y="230" width="206" height="76" rx="18" ry="18" fill="#4f8b66"/>
+  <text class="header" x="954" y="276">MySQL</text>
+
+  <rect x="1184" y="230" width="206" height="76" rx="18" ry="18" fill="#cb6d3d"/>
+  <text class="header" x="1236" y="276">Redis</text>
+
+  <rect x="1466" y="230" width="272" height="76" rx="18" ry="18" fill="#5c7cbe"/>
+  <text class="header" x="1512" y="268">Mix / Cursor Logic</text>
+  <text class="small" x="1494" y="292">policy + token encode/decode</text>
+
+  <line class="lifeline" x1="162" y1="306" x2="162" y2="1480"/>
+  <line class="lifeline" x1="427" y1="306" x2="427" y2="1480"/>
+  <line class="lifeline" x1="716" y1="306" x2="716" y2="1480"/>
+  <line class="lifeline" x1="1005" y1="306" x2="1005" y2="1480"/>
+  <line class="lifeline" x1="1287" y1="306" x2="1287" y2="1480"/>
+  <line class="lifeline" x1="1602" y1="306" x2="1602" y2="1480"/>
+
+  <path class="msg" d="M162 366 H427"/>
+  <text class="step" x="208" y="354">1. `GET /api/v1/feed/home?limit=&amp;cursor=&amp;refresh=`</text>
+
+  <path class="msg" d="M427 434 H716"/>
+  <text class="step" x="498" y="422">2. 解析 `last_post_id / cursor / limit / refresh`</text>
+
+  <path class="msg" d="M716 366 H1602"/>
+  <text class="step" x="942" y="354">3. `resolveFeedReadCursor(req)` 解析双游标 token</text>
+
+  <path class="reply" d="M1602 434 H716"/>
+  <text class="step" x="980" y="422">4. 得到 `inbox cursor / pull cursor / pending / recent authors`</text>
+
+  <path class="msg" d="M716 506 H1287"/>
+  <text class="step" x="868" y="494">5. 非 refresh 时：先查 `feed:home:*` 缓存</text>
+
+  <path class="reply" d="M1287 576 H716"/>
+  <text class="step" x="934" y="564">6. 命中则直接返回；未命中继续</text>
+
+  <path class="msg" d="M716 648 H1005"/>
+  <text class="step" x="768" y="636">7. 查关注列表，构造 allowed authors</text>
+
+  <path class="reply" d="M1005 718 H716"/>
+  <text class="step" x="796" y="706">8. 包含 followings + 自己</text>
+
+  <path class="msg" d="M716 790 H1287"/>
+  <text class="step" x="808" y="778">9. 从 inbox 读取候选 post IDs / pending IDs</text>
+
+  <path class="msg" d="M716 860 H1005"/>
+  <text class="step" x="774" y="848">10. 从 MySQL pull 候选帖子 / pending IDs</text>
+
+  <path class="reply" d="M1287 930 H716"/>
+  <text class="step" x="824" y="918">11. inbox candidates</text>
+
+  <path class="reply" d="M1005 998 H716"/>
+  <text class="step" x="832" y="986">12. pull candidates</text>
+
+  <rect class="alt" x="1198" y="624" width="590" height="250" rx="18" ry="18"/>
+  <text class="note-title" x="1230" y="664">曝光去重存在时</text>
+  <text class="note" x="1230" y="704">- `collectInboxExposureCandidates(...)` 会循环补拉</text>
+  <text class="note" x="1230" y="738">- `collectPullExposureCandidates(...)` 也会循环补拉</text>
+  <text class="note" x="1230" y="772">- `FilterUnseenPostIDs(...)` 把已曝光 post_id 过滤掉</text>
+  <text class="note" x="1230" y="806">- 如果过滤后数量不够，会继续读下一批补满 targetCount</text>
+  <text class="note" x="1230" y="840">- 所以“已读太多导致首页空白”的概率会更低</text>
+
+  <path class="msg" d="M716 1070 H1602"/>
+  <text class="step" x="914" y="1058">13. `mixPageForCursor(...)` 开始混排</text>
+
+  <path class="reply" d="M1602 1140 H716"/>
+  <text class="step" x="876" y="1128">14. 应用 push 配额 / pull 保底 / 作者打散 / 来源打散 / 跨页作者限流</text>
+
+  <path class="msg" d="M716 1210 H1602"/>
+  <text class="step" x="880" y="1198">15. 生成 `next_cursor_token`</text>
+
+  <path class="reply" d="M1602 1280 H716"/>
+  <text class="step" x="852" y="1268">16. token 内含 inbox cursor、pull cursor、pending ids、recent authors</text>
+
+  <rect class="card" x="1026" y="1038" width="698" height="176" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="1058" y="1078">为什么不是单一 `last_post_id`</text>
+  <text class="note" x="1058" y="1116">- inbox 和 pull 的推进速度不同</text>
+  <text class="note" x="1058" y="1148">- 同一帖子可能同时出现在 inbox 和 pull</text>
+  <text class="note" x="1058" y="1180">- 某些帖子本页没发出，需要放入 pending，留给下一页继续参与混排</text>
+
+  <path class="msg" d="M716 1358 H1005"/>
+  <text class="step" x="802" y="1346">17. refresh 首页空白时：可触发 latest pull fallback</text>
+
+  <path class="reply" d="M1005 1428 H716"/>
+  <text class="step" x="780" y="1416">18. 返回 fallback 结果，并标记 `fallback_mode=latest`</text>
+
+  <path class="msg" d="M716 1468 H1287"/>
+  <text class="step" x="848" y="1456">19. 非 refresh 时写缓存；所有结果都写 exposure window</text>
+
+  <path class="reply" d="M716 1518 H427"/>
+  <text class="step" x="516" y="1506">20. Handler 返回 `items / has_more / next_cursor_token`</text>
+
+  <path class="reply" d="M427 1548 H162"/>
+  <text class="step" x="252" y="1536">21. Client 渲染结果，下一页继续带 token 请求</text>
+
+  <rect class="card" x="86" y="1080" width="560" height="124" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="118" y="1120">Inbox 与 Pull 为何都要读</text>
+  <text class="note" x="118" y="1156">- inbox 主要承接小作者的 push 内容</text>
+  <text class="note" x="118" y="1188">- pull 负责大作者，以及作为通用保底来源</text>
+
+  <rect class="card" x="86" y="1334" width="560" height="128" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="118" y="1374">结果写回后的状态</text>
+  <text class="note" x="118" y="1410">- 下一页靠 `next_cursor_token` 延续上下文</text>
+  <text class="note" x="118" y="1442">- 曝光窗口减少 refresh 重复内容</text>
+</svg>

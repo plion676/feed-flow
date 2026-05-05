@@ -62,6 +62,7 @@ func (s *FeedService) collectPullExposureCandidates(
 	targetCount int,
 	batchLimit int,
 	pendingPostIDs []int64,
+	allowedAuthors map[int64]struct{},
 ) (feedExposureCandidates, error) {
 	result := feedExposureCandidates{
 		nextCursor: lastPostID,
@@ -77,11 +78,12 @@ func (s *FeedService) collectPullExposureCandidates(
 	if !ok {
 		return result, context.DeadlineExceeded
 	}
+	pendingPosts = filterFeedPostsByAllowedAuthors(pendingPosts, allowedAuthors, userID)
 	s.appendFeedExposurePosts(&collected, seen, s.filterFeedPostsByExposure(ctx, userID, pendingPosts), targetCount)
 
 	cursor := lastPostID
 	for len(collected) < targetCount {
-		posts, err := s.getHomeFeedByPullPosts(ctx, userID, cursor, batchLimit)
+		posts, err := s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, cursor, batchLimit, allowedAuthors)
 		if err != nil {
 			return result, err
 		}
@@ -125,6 +127,7 @@ func (s *FeedService) collectInboxExposureCandidates(
 	targetCount int,
 	batchLimit int,
 	pendingPostIDs []int64,
+	allowedAuthors map[int64]struct{},
 ) (feedExposureCandidates, error) {
 	result := feedExposureCandidates{
 		nextCursor: lastPostID,
@@ -140,6 +143,7 @@ func (s *FeedService) collectInboxExposureCandidates(
 	if !ok {
 		return result, context.DeadlineExceeded
 	}
+	pendingPosts = filterFeedPostsByAllowedAuthors(pendingPosts, allowedAuthors, userID)
 	s.appendFeedExposurePosts(&collected, seen, s.filterFeedPostsByExposure(ctx, userID, pendingPosts), targetCount)
 
 	cursor := lastPostID
@@ -163,6 +167,7 @@ func (s *FeedService) collectInboxExposureCandidates(
 		if err != nil {
 			return result, err
 		}
+		posts = filterFeedPostsByAllowedAuthors(posts, allowedAuthors, userID)
 
 		nextCursor, ok := minPostID(postIDs)
 		if !ok {

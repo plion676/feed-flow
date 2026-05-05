@@ -22,11 +22,16 @@ type followFeedCacheInvalidator interface {
 	InvalidateHomeFeed(ctx context.Context, userID int64) error
 }
 
+type followInboxAuthorCleanup interface {
+	RemoveAuthorPostsFromInbox(ctx context.Context, userID int64, authorUserID int64) error
+}
+
 // FollowService handles follow/unfollow workflows.
 type FollowService struct {
 	followRepo      followRepository
 	userRepo        followUserRepository
 	feedInvalidator followFeedCacheInvalidator
+	inboxCleanup    followInboxAuthorCleanup
 }
 
 func NewFollowService(followRepo followRepository, userRepo followUserRepository) *FollowService {
@@ -39,6 +44,11 @@ func NewFollowService(followRepo followRepository, userRepo followUserRepository
 // WithFeedCacheInvalidator wires an optional cache invalidator for feed consistency.
 func (s *FollowService) WithFeedCacheInvalidator(invalidator followFeedCacheInvalidator) *FollowService {
 	s.feedInvalidator = invalidator
+	return s
+}
+
+func (s *FollowService) WithInboxAuthorCleanup(cleanup followInboxAuthorCleanup) *FollowService {
+	s.inboxCleanup = cleanup
 	return s
 }
 
@@ -87,6 +97,10 @@ func (s *FollowService) Unfollow(ctx context.Context, userID int64, targetUserID
 	if s.feedInvalidator != nil {
 		// Best-effort cache invalidation: unfollow relation is committed in DB already.
 		_ = s.feedInvalidator.InvalidateHomeFeed(ctx, userID)
+	}
+	if s.inboxCleanup != nil {
+		// Best-effort inbox cleanup: read path still validates current follow relation.
+		_ = s.inboxCleanup.RemoveAuthorPostsFromInbox(ctx, userID, targetUserID)
 	}
 
 	return nil

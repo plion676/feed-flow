@@ -16,6 +16,7 @@ type feedReadCursor struct {
 	PullLastPostID  int64
 	InboxPendingIDs []int64
 	PullPendingIDs  []int64
+	RecentAuthorIDs []int64
 }
 
 type feedCursorToken struct {
@@ -25,9 +26,16 @@ type feedCursorToken struct {
 	PullLastPostID  int64   `json:"pull_last_post_id,omitempty"`
 	InboxPendingIDs []int64 `json:"inbox_pending_ids,omitempty"`
 	PullPendingIDs  []int64 `json:"pull_pending_ids,omitempty"`
+	RecentAuthorIDs []int64 `json:"recent_author_ids,omitempty"`
 }
 
 func encodeFeedCursorToken(cursor feedReadCursor) (string, error) {
+	for _, authorID := range cursor.RecentAuthorIDs {
+		if authorID <= 0 {
+			return "", fmt.Errorf("feed recent author ids must be positive")
+		}
+	}
+
 	token := feedCursorToken{
 		Version:         feedCursorTokenVersion,
 		Mode:            feedCursorModeHybrid,
@@ -35,6 +43,7 @@ func encodeFeedCursorToken(cursor feedReadCursor) (string, error) {
 		PullLastPostID:  cursor.PullLastPostID,
 		InboxPendingIDs: append([]int64(nil), cursor.InboxPendingIDs...),
 		PullPendingIDs:  append([]int64(nil), cursor.PullPendingIDs...),
+		RecentAuthorIDs: append([]int64(nil), cursor.RecentAuthorIDs...),
 	}
 
 	payload, err := json.Marshal(token)
@@ -77,6 +86,11 @@ func decodeFeedCursorToken(raw string) (feedReadCursor, error) {
 			return feedReadCursor{}, fmt.Errorf("feed pull pending ids must be positive")
 		}
 	}
+	for _, authorID := range token.RecentAuthorIDs {
+		if authorID <= 0 {
+			return feedReadCursor{}, fmt.Errorf("feed recent author ids must be positive")
+		}
+	}
 	if token.InboxLastPostID == 0 &&
 		token.PullLastPostID == 0 &&
 		len(token.InboxPendingIDs) == 0 &&
@@ -89,5 +103,6 @@ func decodeFeedCursorToken(raw string) (feedReadCursor, error) {
 		PullLastPostID:  token.PullLastPostID,
 		InboxPendingIDs: append([]int64(nil), token.InboxPendingIDs...),
 		PullPendingIDs:  append([]int64(nil), token.PullPendingIDs...),
+		RecentAuthorIDs: append([]int64(nil), token.RecentAuthorIDs...),
 	}, nil
 }

@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1280" viewBox="0 0 1800 1280" role="img" aria-labelledby="title desc">
+  <title id="title">Follow and Unfollow Sequence</title>
+  <desc id="desc">Sequence diagram for follow and unfollow, including cache invalidation and inbox cleanup.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fcfaf6; }
+      .title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 40px; font-weight: 800; fill: #18181b; }
+      .subtitle { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; fill: #5b5348; }
+      .header { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 24px; font-weight: 800; fill: #ffffff; }
+      .small { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 16px; fill: #f8fafc; }
+      .step { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 18px; fill: #1f2937; }
+      .note-title { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 20px; font-weight: 700; fill: #1f2937; }
+      .note { font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 17px; fill: #374151; }
+      .block { fill: #fff4dd; stroke: #d6a646; stroke-width: 2; }
+      .block2 { fill: #eef4ff; stroke: #7f9fd9; stroke-width: 2; }
+      .card { fill: #ffffff; stroke: #222222; stroke-width: 2; }
+      .lifeline { stroke: #9ca3af; stroke-width: 2; stroke-dasharray: 10 8; }
+      .msg { stroke: #222222; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .reply { stroke: #6b7280; stroke-width: 2.4; fill: none; stroke-dasharray: 10 8; marker-end: url(#arrowGray); }
+    </style>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#222222"/>
+    </marker>
+    <marker id="arrowGray" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#6b7280"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1280"/>
+  <text class="title" x="64" y="76">关注 / 取关时序</text>
+  <text class="subtitle" x="64" y="114">关注影响后续 pull allowlist；取关除了删关系，还会 best-effort 清理当前用户 inbox 里的该作者历史帖子。</text>
+
+  <rect class="block" x="48" y="156" width="1704" height="420" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="198">阶段 1：关注</text>
+
+  <rect class="block2" x="48" y="616" width="1704" height="584" rx="24" ry="24"/>
+  <text class="note-title" x="78" y="658">阶段 2：取关</text>
+
+  <rect x="72" y="228" width="180" height="76" rx="18" ry="18" fill="#6b4f3b"/>
+  <text class="header" x="118" y="274">Client</text>
+  <rect x="332" y="228" width="210" height="76" rx="18" ry="18" fill="#8b5e34"/>
+  <text class="header" x="378" y="266">FollowHandler</text>
+  <text class="small" x="388" y="290">follow / unfollow</text>
+  <rect x="620" y="228" width="220" height="76" rx="18" ry="18" fill="#d39200"/>
+  <text class="header" x="666" y="266">FollowService</text>
+  <rect x="916" y="228" width="206" height="76" rx="18" ry="18" fill="#4f8b66"/>
+  <text class="header" x="968" y="274">MySQL</text>
+  <rect x="1198" y="228" width="206" height="76" rx="18" ry="18" fill="#cb6d3d"/>
+  <text class="header" x="1250" y="274">Redis</text>
+  <rect x="1480" y="228" width="230" height="76" rx="18" ry="18" fill="#5c7cbe"/>
+  <text class="header" x="1508" y="266">Inbox Cleanup</text>
+  <text class="small" x="1512" y="290">scan + remove author posts</text>
+
+  <line class="lifeline" x1="162" y1="304" x2="162" y2="1164"/>
+  <line class="lifeline" x1="437" y1="304" x2="437" y2="1164"/>
+  <line class="lifeline" x1="730" y1="304" x2="730" y2="1164"/>
+  <line class="lifeline" x1="1019" y1="304" x2="1019" y2="1164"/>
+  <line class="lifeline" x1="1301" y1="304" x2="1301" y2="1164"/>
+  <line class="lifeline" x1="1595" y1="304" x2="1595" y2="1164"/>
+
+  <path class="msg" d="M162 360 H437"/>
+  <text class="step" x="218" y="348">1. `POST /api/v1/follows/:target_user_id`</text>
+  <path class="msg" d="M437 430 H730"/>
+  <text class="step" x="502" y="418">2. `FollowService.Follow(userID, targetUserID)`</text>
+  <path class="msg" d="M730 500 H1019"/>
+  <text class="step" x="782" y="488">3. 校验目标用户存在</text>
+  <path class="msg" d="M730 570 H1019"/>
+  <text class="step" x="800" y="558">4. `INSERT follows`</text>
+  <path class="msg" d="M730 640 H1301"/>
+  <text class="step" x="854" y="628">5. Best-effort: 失效当前用户 Home Feed 缓存</text>
+  <path class="reply" d="M1301 710 H162"/>
+  <text class="step" x="680" y="698">6. 返回 `followed=true`</text>
+
+  <rect class="card" x="1448" y="390" width="258" height="146" rx="18" ry="18" fill="#fffaf2"/>
+  <text class="note-title" x="1478" y="430">关注后的效果</text>
+  <text class="note" x="1478" y="466">- 后续 pull allowlist 会包含目标作者</text>
+  <text class="note" x="1478" y="498">- 当前用户旧 feed 缓存失效</text>
+
+  <path class="msg" d="M162 794 H437"/>
+  <text class="step" x="212" y="782">7. `DELETE /api/v1/follows/:target_user_id`</text>
+  <path class="msg" d="M437 864 H730"/>
+  <text class="step" x="488" y="852">8. `FollowService.Unfollow(userID, targetUserID)`</text>
+  <path class="msg" d="M730 934 H1019"/>
+  <text class="step" x="804" y="922">9. `DELETE FROM follows`</text>
+  <path class="msg" d="M730 1004 H1301"/>
+  <text class="step" x="846" y="992">10. Best-effort: 失效当前用户 Home Feed 缓存</text>
+  <path class="msg" d="M730 1074 H1595"/>
+  <text class="step" x="912" y="1062">11. Best-effort: `RemoveAuthorPostsFromInbox(userID, authorUserID)`</text>
+  <path class="reply" d="M1595 1144 H162"/>
+  <text class="step" x="736" y="1132">12. 返回 `followed=false`</text>
+
+  <rect class="card" x="1200" y="754" width="506" height="226" rx="18" ry="18" fill="#ffffff"/>
+  <text class="note-title" x="1232" y="794">Inbox 清理内部做什么</text>
+  <text class="note" x="1232" y="830">- 扫当前用户 inbox 的一批 post_id</text>
+  <text class="note" x="1232" y="862">- 批量回表 `ListByIDs` 找出属于被取关作者的帖子</text>
+  <text class="note" x="1232" y="894">- 调 `RemovePostsFromInbox` 把这些 post_id 从当前用户 inbox 删除</text>
+  <text class="note" x="1232" y="926">- 即使 cleanup 延迟，读路径仍会按最新 follow allowlist 过滤作者</text>
+</svg>

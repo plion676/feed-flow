@@ -103,6 +103,11 @@ func New(cfg *Config) *App {
 		postService = postService.WithFeedCacheInvalidator(feedCacheInvalidator)
 		followService = followService.WithFeedCacheInvalidator(feedCacheInvalidator)
 	}
+	if feedInboxRepo != nil && cfg.Feed.Inbox.Enabled {
+		followService = followService.WithInboxAuthorCleanup(
+			service.NewFeedInboxAuthorCleanup(feedInboxRepo, postRepo),
+		)
+	}
 	if feedInvalidationEventPub != nil {
 		postService = postService.WithFeedInvalidationEventPublisher(feedInvalidationEventPub)
 	}

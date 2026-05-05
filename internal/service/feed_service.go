@@ -128,6 +128,8 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		}
 	}
 
+	allowedAuthors, allowedAuthorsErr := s.getFeedAllowedAuthorIDs(ctx, req.UserID)
+
 	var (
 		pullCandidates  feedExposureCandidates
 		inboxCandidates feedExposureCandidates
@@ -137,14 +139,19 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 
 	if s.exposureRepo != nil {
 		batchLimit := resolveFeedExposureBatchLimit(limit, s.exposureBatchMultiplier)
-		pullCandidates, err = s.collectPullExposureCandidates(
-			ctx,
-			req.UserID,
-			readCursor.PullLastPostID,
-			limit+1,
-			batchLimit,
-			readCursor.PullPendingIDs,
-		)
+		if allowedAuthorsErr == nil {
+			pullCandidates, err = s.collectPullExposureCandidates(
+				ctx,
+				req.UserID,
+				readCursor.PullLastPostID,
+				limit+1,
+				batchLimit,
+				readCursor.PullPendingIDs,
+				allowedAuthors,
+			)
+		} else {
+			err = allowedAuthorsErr
+		}
 		inboxCandidates, inboxErr := s.collectInboxExposureCandidates(
 			ctx,
 			req.UserID,
@@ -152,6 +159,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 			limit+1,
 			batchLimit,
 			readCursor.InboxPendingIDs,
+			allowedAuthors,
 		)
 		if inboxErr != nil {
 			inboxCandidates = feedExposureCandidates{}
@@ -159,19 +167,24 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 		inboxPosts = inboxCandidates.posts
 		inboxHit = inboxCandidates.hit
 	} else {
-		pullPosts, pullErr := s.getHomeFeedByPullPostsWithPending(
-			ctx,
-			req.UserID,
-			readCursor.PullLastPostID,
-			limit+1,
-			readCursor.PullPendingIDs,
-		)
-		err = pullErr
-		pullCandidates = feedExposureCandidates{
-			posts:      pullPosts,
-			nextCursor: readCursor.PullLastPostID,
-			hasMore:    len(pullPosts) > limit,
-			hit:        len(pullPosts) > 0,
+		if allowedAuthorsErr == nil {
+			pullPosts, pullErr := s.getHomeFeedByPullPostsWithPending(
+				ctx,
+				req.UserID,
+				readCursor.PullLastPostID,
+				limit+1,
+				readCursor.PullPendingIDs,
+				allowedAuthors,
+			)
+			err = pullErr
+			pullCandidates = feedExposureCandidates{
+				posts:      pullPosts,
+				nextCursor: readCursor.PullLastPostID,
+				hasMore:    len(pullPosts) > limit,
+				hit:        len(pullPosts) > 0,
+			}
+		} else {
+			err = allowedAuthorsErr
 		}
 		if maybeInboxPosts, ok := s.getHomeFeedFromInboxPostsWithPending(
 			ctx,
@@ -179,6 +192,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 			readCursor.InboxLastPostID,
 			limit+1,
 			readCursor.InboxPendingIDs,
+			allowedAuthors,
 		); ok {
 			inboxPosts = maybeInboxPosts
 			inboxHit = true
@@ -197,7 +211,15 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 			return nil, xerror.ErrInternal
 		}
 		if useHybridCursor {
-			page := mixFeedPageForCursor(inboxPosts, nil, limit, readCursor.InboxLastPostID, readCursor.PullLastPostID, s.mixPolicy)
+			page := mixFeedPageForCursor(
+				inboxPosts,
+				nil,
+				limit,
+				readCursor.InboxLastPostID,
+				readCursor.PullLastPostID,
+				readCursor.RecentAuthorIDs,
+				s.mixPolicy,
+			)
 			result := buildFeedResultWithHybridCursor(page)
 			s.setFeedCache(ctx, cacheKey, result)
 			return result, nil
@@ -221,6 +243,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 			limit,
 			inboxCursor,
 			pullCursor,
+			readCursor.RecentAuthorIDs,
 			s.mixPolicy,
 		)
 		if s.exposureRepo != nil {
@@ -358,6 +381,7 @@ func (s *FeedService) getHomeFeedFromInboxPosts(
 	userID int64,
 	lastPostID int64,
 	limit int,
+	allowedAuthors map[int64]struct{},
 ) ([]*model.Post, bool) {
 	if s.inboxRepo == nil {
 		return nil, false
@@ -385,6 +409,9 @@ func (s *FeedService) getHomeFeedFromInboxPosts(
 		}
 		for _, post := range posts {
 			if post == nil || post.ID <= 0 {
+				continue
+			}
+			if !isFeedAuthorAllowed(allowedAuthors, post.UserID, userID) {
 				continue
 			}
 			if _, ok := seen[post.ID]; ok {
@@ -419,13 +446,15 @@ func (s *FeedService) getHomeFeedFromInboxPostsWithPending(
 	lastPostID int64,
 	limit int,
 	pendingPostIDs []int64,
+	allowedAuthors map[int64]struct{},
 ) ([]*model.Post, bool) {
 	pendingPosts, ok := s.getPostsByPendingIDs(ctx, pendingPostIDs)
 	if !ok {
 		return nil, false
 	}
+	pendingPosts = filterFeedPostsByAllowedAuthors(pendingPosts, allowedAuthors, userID)
 
-	freshPosts, inboxHit := s.getHomeFeedFromInboxPosts(ctx, userID, lastPostID, limit)
+	freshPosts, inboxHit := s.getHomeFeedFromInboxPosts(ctx, userID, lastPostID, limit, allowedAuthors)
 	if !inboxHit {
 		if len(pendingPosts) == 0 {
 			return nil, false
@@ -442,13 +471,22 @@ func (s *FeedService) getHomeFeedByPullPosts(
 	lastPostID int64,
 	limit int,
 ) ([]*model.Post, error) {
-	followingUserIDs, err := s.followRepo.ListFollowingUserIDs(ctx, userID)
+	allowedAuthors, err := s.getFeedAllowedAuthorIDs(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	followingUserIDs = append(followingUserIDs, userID)
+	return s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, lastPostID, limit, allowedAuthors)
+}
 
+func (s *FeedService) getHomeFeedByPullPostsWithAllowedAuthors(
+	ctx context.Context,
+	userID int64,
+	lastPostID int64,
+	limit int,
+	allowedAuthors map[int64]struct{},
+) ([]*model.Post, error) {
+	followingUserIDs := collectAllowedAuthorIDs(allowedAuthors)
 	posts, err := s.postRepo.ListByUserIDs(ctx, followingUserIDs, lastPostID, limit)
 	if err != nil {
 		return nil, err
@@ -463,13 +501,15 @@ func (s *FeedService) getHomeFeedByPullPostsWithPending(
 	lastPostID int64,
 	limit int,
 	pendingPostIDs []int64,
+	allowedAuthors map[int64]struct{},
 ) ([]*model.Post, error) {
 	pendingPosts, ok := s.getPostsByPendingIDs(ctx, pendingPostIDs)
 	if !ok {
 		return nil, fmt.Errorf("list pending pull posts failed")
 	}
+	pendingPosts = filterFeedPostsByAllowedAuthors(pendingPosts, allowedAuthors, userID)
 
-	posts, err := s.getHomeFeedByPullPosts(ctx, userID, lastPostID, limit)
+	posts, err := s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, lastPostID, limit, allowedAuthors)
 	if err != nil {
 		return nil, err
 	}
@@ -500,6 +540,74 @@ func minPostID(postIDs []int64) (int64, bool) {
 		}
 	}
 	return minID, true
+}
+
+func (s *FeedService) getFeedAllowedAuthorIDs(ctx context.Context, userID int64) (map[int64]struct{}, error) {
+	allowed := map[int64]struct{}{
+		userID: {},
+	}
+	if s == nil || s.followRepo == nil || userID <= 0 {
+		return allowed, nil
+	}
+
+	followingUserIDs, err := s.followRepo.ListFollowingUserIDs(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for _, followID := range followingUserIDs {
+		if followID <= 0 {
+			continue
+		}
+		allowed[followID] = struct{}{}
+	}
+	return allowed, nil
+}
+
+func collectAllowedAuthorIDs(allowed map[int64]struct{}) []int64 {
+	if len(allowed) == 0 {
+		return nil
+	}
+
+	ids := make([]int64, 0, len(allowed))
+	for userID := range allowed {
+		if userID <= 0 {
+			continue
+		}
+		ids = append(ids, userID)
+	}
+	return ids
+}
+
+func isFeedAuthorAllowed(allowed map[int64]struct{}, authorUserID int64, currentUserID int64) bool {
+	if authorUserID <= 0 {
+		return false
+	}
+	if authorUserID == currentUserID {
+		return true
+	}
+	if allowed == nil {
+		return true
+	}
+	_, ok := allowed[authorUserID]
+	return ok
+}
+
+func filterFeedPostsByAllowedAuthors(posts []*model.Post, allowed map[int64]struct{}, currentUserID int64) []*model.Post {
+	if len(posts) == 0 {
+		return posts
+	}
+
+	filtered := make([]*model.Post, 0, len(posts))
+	for _, post := range posts {
+		if post == nil || post.ID <= 0 {
+			continue
+		}
+		if !isFeedAuthorAllowed(allowed, post.UserID, currentUserID) {
+			continue
+		}
+		filtered = append(filtered, post)
+	}
+	return filtered
 }
 
 func buildFeedResult(posts []*model.Post, limit int, hasMore bool) *FeedResult {
@@ -559,6 +667,7 @@ func buildFeedResultWithHybridCursor(page feedMixPageResult) *FeedResult {
 		PullLastPostID:  page.nextPullCursor,
 		InboxPendingIDs: page.inboxPendingPostIDs,
 		PullPendingIDs:  page.pullPendingPostIDs,
+		RecentAuthorIDs: page.recentAuthorIDs,
 	})
 	if err != nil {
 		// Fall back to no continuation token instead of failing the feed read path.
