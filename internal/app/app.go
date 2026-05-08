@@ -55,6 +55,7 @@ func New(cfg *Config) *App {
 	var feedCacheInvalidator *repository.FeedCacheInvalidatorRepository
 	var feedInvalidationEventPub *repository.FeedInvalidationEventRepository
 	var feedInboxRepo *repository.FeedInboxRepository
+	var feedOutboxRepo *repository.FeedOutboxRepository
 	var feedExposureRepo *repository.FeedExposureRepository
 	redisClient, err := NewRedisClient(cfg)
 	if err != nil {
@@ -64,6 +65,9 @@ func New(cfg *Config) *App {
 		feedCacheInvalidator = repository.NewFeedCacheInvalidatorRepository(redisClient)
 		feedInvalidationEventPub = repository.NewFeedInvalidationEventRepository(redisClient)
 		feedInboxRepo = repository.NewFeedInboxRepository(redisClient)
+		if cfg.Feed.Outbox.Enabled {
+			feedOutboxRepo = repository.NewFeedOutboxRepository(redisClient)
+		}
 		if cfg.Feed.Exposure.Enabled {
 			feedExposureRepo = repository.NewFeedExposureRepository(redisClient, repository.FeedExposureRepositoryOptions{
 				KeyTTL: time.Duration(cfg.Feed.Exposure.KeyTTLHours) * time.Hour,
@@ -85,6 +89,19 @@ func New(cfg *Config) *App {
 	if feedInboxRepo != nil && cfg.Feed.Inbox.Enabled {
 		feedService = feedService.WithInbox(feedInboxRepo)
 	}
+	if feedOutboxRepo != nil {
+		feedService = feedService.WithOutbox(
+			feedOutboxRepo,
+			userCountRepo,
+			service.NewFeedHybridPolicy(cfg.Feed.Hybrid.PushFollowerThreshold),
+			service.FeedOutboxOptions{
+				Enabled:           cfg.Feed.Outbox.Enabled,
+				ReadChunkSize:     cfg.Feed.Outbox.ReadChunkSize,
+				MaxAuthorsPerRead: cfg.Feed.Outbox.MaxAuthorsPerRead,
+				DBFallbackEnabled: cfg.Feed.Outbox.DBFallbackEnabled,
+			},
+		)
+	}
 	if feedExposureRepo != nil {
 		feedService = feedService.WithExposure(feedExposureRepo, service.FeedExposureOptions{
 			WindowTTL:       time.Duration(cfg.Feed.Exposure.WindowHours) * time.Hour,
@@ -102,6 +119,9 @@ func New(cfg *Config) *App {
 	if feedCacheInvalidator != nil {
 		postService = postService.WithFeedCacheInvalidator(feedCacheInvalidator)
 		followService = followService.WithFeedCacheInvalidator(feedCacheInvalidator)
+	}
+	if feedOutboxRepo != nil {
+		postService = postService.WithFeedOutbox(feedOutboxRepo, cfg.Feed.Outbox.MaxItems)
 	}
 	if feedInboxRepo != nil && cfg.Feed.Inbox.Enabled {
 		followService = followService.WithInboxAuthorCleanup(

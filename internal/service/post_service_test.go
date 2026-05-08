@@ -56,6 +56,39 @@ func (f *fakePostInvalidationEventPublisher) PublishPostDeletedEvent(_ context.C
 	return f.err
 }
 
+type fakePostOutboxRepo struct {
+	addCalled    int
+	trimCalled   int
+	removeCalled int
+	gotAuthorID  int64
+	gotPostID    int64
+	gotMaxItems  int64
+	addErr       error
+	trimErr      error
+	removeErr    error
+}
+
+func (f *fakePostOutboxRepo) AddPostToOutbox(_ context.Context, authorUserID int64, postID int64) error {
+	f.addCalled++
+	f.gotAuthorID = authorUserID
+	f.gotPostID = postID
+	return f.addErr
+}
+
+func (f *fakePostOutboxRepo) RemovePostFromOutbox(_ context.Context, authorUserID int64, postID int64) error {
+	f.removeCalled++
+	f.gotAuthorID = authorUserID
+	f.gotPostID = postID
+	return f.removeErr
+}
+
+func (f *fakePostOutboxRepo) TrimOutbox(_ context.Context, authorUserID int64, maxItems int64) error {
+	f.trimCalled++
+	f.gotAuthorID = authorUserID
+	f.gotMaxItems = maxItems
+	return f.trimErr
+}
+
 func (r *fakePostRepo) Create(_ context.Context, post *model.Post) error {
 	if r.createErr != nil {
 		return r.createErr
@@ -102,11 +135,15 @@ func TestPostServiceCreate(t *testing.T) {
 		repo              *fakePostRepo
 		invalidator       *fakePostFeedInvalidator
 		eventPublisher    *fakePostInvalidationEventPublisher
+		outboxRepo        *fakePostOutboxRepo
+		outboxMaxItems    int64
 		wantErr           *xerror.Error
 		wantSavedContent  string
 		wantResultContent string
 		wantInvalidate    bool
 		wantPublishEvent  bool
+		wantOutboxAdd     bool
+		wantOutboxTrim    bool
 	}{
 		{
 			name:           "bad request when user id invalid",
@@ -114,6 +151,7 @@ func TestPostServiceCreate(t *testing.T) {
 			repo:           &fakePostRepo{},
 			invalidator:    &fakePostFeedInvalidator{},
 			eventPublisher: &fakePostInvalidationEventPublisher{},
+			outboxRepo:     &fakePostOutboxRepo{},
 			wantErr:        xerror.ErrBadRequest,
 		},
 		{
@@ -122,6 +160,7 @@ func TestPostServiceCreate(t *testing.T) {
 			repo:           &fakePostRepo{},
 			invalidator:    &fakePostFeedInvalidator{},
 			eventPublisher: &fakePostInvalidationEventPublisher{},
+			outboxRepo:     &fakePostOutboxRepo{},
 			wantErr:        xerror.ErrBadRequest,
 		},
 		{
@@ -130,6 +169,7 @@ func TestPostServiceCreate(t *testing.T) {
 			repo:           &fakePostRepo{},
 			invalidator:    &fakePostFeedInvalidator{},
 			eventPublisher: &fakePostInvalidationEventPublisher{},
+			outboxRepo:     &fakePostOutboxRepo{},
 			wantErr:        xerror.ErrBadRequest,
 		},
 		{
@@ -138,6 +178,7 @@ func TestPostServiceCreate(t *testing.T) {
 			repo:           &fakePostRepo{createErr: errors.New("insert failed")},
 			invalidator:    &fakePostFeedInvalidator{},
 			eventPublisher: &fakePostInvalidationEventPublisher{},
+			outboxRepo:     &fakePostOutboxRepo{},
 			wantErr:        xerror.ErrInternal,
 		},
 		{
@@ -146,11 +187,15 @@ func TestPostServiceCreate(t *testing.T) {
 			repo:              &fakePostRepo{},
 			invalidator:       &fakePostFeedInvalidator{},
 			eventPublisher:    &fakePostInvalidationEventPublisher{},
+			outboxRepo:        &fakePostOutboxRepo{},
+			outboxMaxItems:    1000,
 			wantErr:           nil,
 			wantSavedContent:  "hello post",
 			wantResultContent: "hello post",
 			wantInvalidate:    true,
 			wantPublishEvent:  true,
+			wantOutboxAdd:     true,
+			wantOutboxTrim:    true,
 		},
 		{
 			name:              "success even when event publish fails",
@@ -158,11 +203,30 @@ func TestPostServiceCreate(t *testing.T) {
 			repo:              &fakePostRepo{},
 			invalidator:       &fakePostFeedInvalidator{},
 			eventPublisher:    &fakePostInvalidationEventPublisher{err: errors.New("queue timeout")},
+			outboxRepo:        &fakePostOutboxRepo{},
+			outboxMaxItems:    1000,
 			wantErr:           nil,
 			wantSavedContent:  "event down",
 			wantResultContent: "event down",
 			wantInvalidate:    true,
 			wantPublishEvent:  true,
+			wantOutboxAdd:     true,
+			wantOutboxTrim:    true,
+		},
+		{
+			name:              "success even when outbox write fails",
+			req:               CreatePostRequest{UserID: 1001, Content: "  outbox down  "},
+			repo:              &fakePostRepo{},
+			invalidator:       &fakePostFeedInvalidator{},
+			eventPublisher:    &fakePostInvalidationEventPublisher{},
+			outboxRepo:        &fakePostOutboxRepo{addErr: errors.New("redis down")},
+			outboxMaxItems:    1000,
+			wantErr:           nil,
+			wantSavedContent:  "outbox down",
+			wantResultContent: "outbox down",
+			wantInvalidate:    true,
+			wantPublishEvent:  true,
+			wantOutboxAdd:     true,
 		},
 	}
 
@@ -173,7 +237,8 @@ func TestPostServiceCreate(t *testing.T) {
 
 			svc := NewPostService(tc.repo).
 				WithFeedCacheInvalidator(tc.invalidator).
-				WithFeedInvalidationEventPublisher(tc.eventPublisher)
+				WithFeedInvalidationEventPublisher(tc.eventPublisher).
+				WithFeedOutbox(tc.outboxRepo, tc.outboxMaxItems)
 			got, gotErr := svc.Create(ctx, tc.req)
 
 			if gotErr != tc.wantErr {
@@ -189,6 +254,9 @@ func TestPostServiceCreate(t *testing.T) {
 				}
 				if tc.eventPublisher.called != 0 {
 					t.Fatalf("event publisher should not be called on failed create, called=%d", tc.eventPublisher.called)
+				}
+				if tc.outboxRepo.addCalled != 0 {
+					t.Fatalf("outbox should not be called on failed create, called=%d", tc.outboxRepo.addCalled)
 				}
 				return
 			}
@@ -228,6 +296,21 @@ func TestPostServiceCreate(t *testing.T) {
 			}
 			if tc.wantPublishEvent && tc.eventPublisher.gotPostID <= 0 {
 				t.Fatalf("unexpected event publisher post id: got=%d", tc.eventPublisher.gotPostID)
+			}
+			if tc.wantOutboxAdd && tc.outboxRepo.addCalled != 1 {
+				t.Fatalf("expected outbox add called once, got=%d", tc.outboxRepo.addCalled)
+			}
+			if tc.wantOutboxAdd && tc.outboxRepo.gotAuthorID != tc.req.UserID {
+				t.Fatalf("unexpected outbox author id: got=%d want=%d", tc.outboxRepo.gotAuthorID, tc.req.UserID)
+			}
+			if tc.wantOutboxAdd && tc.outboxRepo.gotPostID <= 0 {
+				t.Fatalf("unexpected outbox post id: got=%d", tc.outboxRepo.gotPostID)
+			}
+			if tc.wantOutboxTrim && tc.outboxRepo.trimCalled != 1 {
+				t.Fatalf("expected outbox trim called once, got=%d", tc.outboxRepo.trimCalled)
+			}
+			if tc.wantOutboxTrim && tc.outboxRepo.gotMaxItems != tc.outboxMaxItems {
+				t.Fatalf("unexpected outbox max items: got=%d want=%d", tc.outboxRepo.gotMaxItems, tc.outboxMaxItems)
 			}
 		})
 	}

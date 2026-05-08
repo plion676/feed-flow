@@ -42,6 +42,7 @@ type JWTConfig struct {
 type FeedConfig struct {
 	Hybrid   FeedHybridConfig   `yaml:"hybrid"`
 	Inbox    FeedInboxConfig    `yaml:"inbox"`
+	Outbox   FeedOutboxConfig   `yaml:"outbox"`
 	Exposure FeedExposureConfig `yaml:"exposure"`
 	Worker   FeedWorkerConfig   `yaml:"worker"`
 }
@@ -59,6 +60,14 @@ type FeedInboxConfig struct {
 	MaxItems  int64 `yaml:"max_items"`
 	BatchSize int   `yaml:"batch_size"`
 	Workers   int   `yaml:"workers"`
+}
+
+type FeedOutboxConfig struct {
+	Enabled            bool  `yaml:"enabled"`
+	MaxItems           int64 `yaml:"max_items"`
+	ReadChunkSize      int   `yaml:"read_chunk_size"`
+	MaxAuthorsPerRead  int   `yaml:"max_authors_per_read"`
+	DBFallbackEnabled  bool  `yaml:"db_fallback_enabled"`
 }
 
 type FeedMixConfig struct {

@@ -39,6 +39,12 @@ feed:
     max_items: 1000
     batch_size: 200
     workers: 8
+  outbox:
+    enabled: false
+    max_items: 1000
+    read_chunk_size: 32
+    max_authors_per_read: 200
+    db_fallback_enabled: true
   exposure:
     enabled: true
     # Posts exposed within this window are filtered on subsequent feed reads.

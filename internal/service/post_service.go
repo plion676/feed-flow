@@ -30,6 +30,8 @@ type PostService struct {
 	postRepo             postRepository
 	feedInvalidator      postFeedCacheInvalidator
 	invalidationEventPub postFeedInvalidationEventPublisher
+	outboxRepo           feedOutboxRepository
+	outboxMaxItems       int64
 }
 
 type CreatePostRequest struct {
@@ -73,6 +75,13 @@ func (s *PostService) WithFeedInvalidationEventPublisher(publisher postFeedInval
 	return s
 }
 
+// WithFeedOutbox wires an optional author outbox writer for hybrid pull reads.
+func (s *PostService) WithFeedOutbox(outboxRepo feedOutboxRepository, maxItems int64) *PostService {
+	s.outboxRepo = outboxRepo
+	s.outboxMaxItems = maxItems
+	return s
+}
+
 func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostResult, *xerror.Error) {
 	trimmedContent := strings.TrimSpace(req.Content)
 	if req.UserID <= 0 || trimmedContent == "" {
@@ -96,6 +105,13 @@ func (s *PostService) Create(ctx context.Context, req CreatePostRequest) (*PostR
 	if s.feedInvalidator != nil {
 		// Best-effort cache invalidation: publishing should not fail because cache cleanup fails.
 		_ = s.feedInvalidator.InvalidateHomeFeed(ctx, req.UserID)
+	}
+	if s.outboxRepo != nil {
+		// Best-effort outbox write: Redis repair is also covered by async worker replay.
+		_ = s.outboxRepo.AddPostToOutbox(ctx, req.UserID, post.ID)
+		if s.outboxMaxItems > 0 {
+			_ = s.outboxRepo.TrimOutbox(ctx, req.UserID, s.outboxMaxItems)
+		}
 	}
 	if s.invalidationEventPub != nil {
 		// Best-effort async signal: queue publish failure should not fail post creation.

@@ -266,6 +266,64 @@ func (r *fakeFeedExposureRepo) MarkSeenPostIDs(_ context.Context, userID int64, 
 	return nil
 }
 
+type fakeFeedUserCountRepo struct {
+	followerCounts map[int64]int64
+	err            error
+
+	called     int
+	gotUserIDs []int64
+}
+
+func (r *fakeFeedUserCountRepo) BatchGetFollowerCounts(_ context.Context, userIDs []int64) (map[int64]int64, error) {
+	r.called++
+	r.gotUserIDs = append([]int64(nil), userIDs...)
+	if r.err != nil {
+		return nil, r.err
+	}
+
+	result := make(map[int64]int64, len(userIDs))
+	for _, userID := range userIDs {
+		if userID <= 0 {
+			continue
+		}
+		result[userID] = r.followerCounts[userID]
+	}
+	return result, nil
+}
+
+type fakeFeedOutboxRepo struct {
+	postIDsByAuthor map[int64][]int64
+	errByAuthor     map[int64]error
+
+	called       int
+	gotAuthorIDs []int64
+	gotCursors   []int64
+	gotLimits    []int
+}
+
+func (r *fakeFeedOutboxRepo) ListPostIDsByCursor(_ context.Context, authorUserID int64, maxPostID int64, limit int) ([]int64, error) {
+	r.called++
+	r.gotAuthorIDs = append(r.gotAuthorIDs, authorUserID)
+	r.gotCursors = append(r.gotCursors, maxPostID)
+	r.gotLimits = append(r.gotLimits, limit)
+	if err := r.errByAuthor[authorUserID]; err != nil {
+		return nil, err
+	}
+
+	source := r.postIDsByAuthor[authorUserID]
+	filtered := make([]int64, 0, len(source))
+	for _, postID := range source {
+		if maxPostID > 0 && postID >= maxPostID {
+			continue
+		}
+		filtered = append(filtered, postID)
+		if len(filtered) >= limit {
+			break
+		}
+	}
+	return filtered, nil
+}
+
 func containsInt64(nums []int64, target int64) bool {
 	for _, n := range nums {
 		if n == target {
@@ -1306,6 +1364,261 @@ func TestFeedServiceGetHomeFeedExposure(t *testing.T) {
 		}
 		if got.FallbackMode != "" {
 			t.Fatalf("expected empty fallback mode on normal first page, got=%q", got.FallbackMode)
+		}
+	})
+}
+
+func TestFeedServiceGetHomeFeedOutbox(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+
+	t.Run("should use outbox for pull-only authors and db for push authors", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002, 1003}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 13, UserID: 1003, Content: "big-13", Status: 1, CreatedAt: now},
+				{ID: 12, UserID: 1001, Content: "self-12", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 11, UserID: 1002, Content: "small-11", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 10, UserID: 1003, Content: "big-10", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+				{ID: 9, UserID: 1002, Content: "small-9", Status: 1, CreatedAt: now.Add(-4 * time.Minute)},
+			},
+		}
+		outboxRepo := &fakeFeedOutboxRepo{
+			postIDsByAuthor: map[int64][]int64{
+				1001: {12},
+				1003: {13, 10},
+			},
+		}
+		userCountRepo := &fakeFeedUserCountRepo{
+			followerCounts: map[int64]int64{
+				1002: 5,
+				1003: 500,
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithOutbox(
+			outboxRepo,
+			userCountRepo,
+			NewFeedHybridPolicy(100),
+			FeedOutboxOptions{
+				Enabled:           true,
+				ReadChunkSize:     2,
+				MaxAuthorsPerRead: 10,
+				DBFallbackEnabled: true,
+			},
+		)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  4,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 4 {
+			t.Fatalf("unexpected result: %+v", got)
+		}
+
+		wantIDs := []int64{13, 12, 11, 10}
+		for i, wantID := range wantIDs {
+			if got.Items[i].PostID != wantID {
+				t.Fatalf("unexpected item at %d: got=%d want=%d", i, got.Items[i].PostID, wantID)
+			}
+		}
+		if userCountRepo.called != 1 {
+			t.Fatalf("expected user count repo called once, got=%d", userCountRepo.called)
+		}
+		if outboxRepo.called == 0 {
+			t.Fatal("expected outbox repo to be used")
+		}
+		if !containsInt64(postRepo.gotUserIDs, 1002) {
+			t.Fatalf("expected db pull to include push author 1002, got=%v", postRepo.gotUserIDs)
+		}
+		if containsInt64(postRepo.gotUserIDs, 1003) || containsInt64(postRepo.gotUserIDs, 1001) {
+			t.Fatalf("expected db pull not to include outbox authors, got=%v", postRepo.gotUserIDs)
+		}
+	})
+
+	t.Run("should merge outbox across authors without skipping middle posts", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002, 1003}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 100, UserID: 1002, Content: "a-100", Status: 1, CreatedAt: now},
+				{ID: 99, UserID: 1002, Content: "a-99", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 98, UserID: 1002, Content: "a-98", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+				{ID: 97, UserID: 1003, Content: "b-97", Status: 1, CreatedAt: now.Add(-3 * time.Minute)},
+			},
+		}
+		outboxRepo := &fakeFeedOutboxRepo{
+			postIDsByAuthor: map[int64][]int64{
+				1002: {100, 99, 98},
+				1003: {97},
+			},
+		}
+		userCountRepo := &fakeFeedUserCountRepo{
+			followerCounts: map[int64]int64{
+				1002: 500,
+				1003: 600,
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithOutbox(
+			outboxRepo,
+			userCountRepo,
+			NewFeedHybridPolicy(100),
+			FeedOutboxOptions{
+				Enabled:           true,
+				ReadChunkSize:     1,
+				MaxAuthorsPerRead: 10,
+				DBFallbackEnabled: false,
+			},
+		)
+
+		firstPage, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  2,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected first page error: %v", gotErr)
+		}
+		wantFirstPage := []int64{100, 99}
+		if len(firstPage.Items) != len(wantFirstPage) {
+			t.Fatalf("unexpected first page items: %+v", firstPage)
+		}
+		for i, wantID := range wantFirstPage {
+			if firstPage.Items[i].PostID != wantID {
+				t.Fatalf("unexpected first page item at %d: got=%d want=%d", i, firstPage.Items[i].PostID, wantID)
+			}
+		}
+		if !firstPage.HasMore || firstPage.NextCursor != 99 {
+			t.Fatalf("expected numeric continuation on first page: %+v", firstPage)
+		}
+		if firstPage.NextCursorToken != "" {
+			t.Fatalf("expected no hybrid token for outbox-only page, got=%q", firstPage.NextCursorToken)
+		}
+
+		secondPage, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID:     1001,
+			LastPostID: firstPage.NextCursor,
+			Limit:      2,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected second page error: %v", gotErr)
+		}
+		wantSecondPage := []int64{98, 97}
+		if len(secondPage.Items) != len(wantSecondPage) {
+			t.Fatalf("unexpected second page items: %+v", secondPage)
+		}
+		for i, wantID := range wantSecondPage {
+			if secondPage.Items[i].PostID != wantID {
+				t.Fatalf("unexpected second page item at %d: got=%d want=%d", i, secondPage.Items[i].PostID, wantID)
+			}
+		}
+	})
+
+	t.Run("should fallback to db pull when outbox read fails", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1002, Content: "db-12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1001, Content: "db-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+			},
+		}
+		outboxRepo := &fakeFeedOutboxRepo{
+			errByAuthor: map[int64]error{
+				1001: errors.New("redis timeout"),
+			},
+		}
+		userCountRepo := &fakeFeedUserCountRepo{
+			followerCounts: map[int64]int64{
+				1002: 500,
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithOutbox(
+			outboxRepo,
+			userCountRepo,
+			NewFeedHybridPolicy(100),
+			FeedOutboxOptions{
+				Enabled:           true,
+				ReadChunkSize:     2,
+				MaxAuthorsPerRead: 10,
+				DBFallbackEnabled: true,
+			},
+		)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  2,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 2 {
+			t.Fatalf("unexpected fallback result: %+v", got)
+		}
+		if got.Items[0].PostID != 12 || got.Items[1].PostID != 11 {
+			t.Fatalf("unexpected fallback items: %+v", got.Items)
+		}
+		if !containsInt64(postRepo.gotUserIDs, 1001) || !containsInt64(postRepo.gotUserIDs, 1002) {
+			t.Fatalf("expected db fallback to include all authors, got=%v", postRepo.gotUserIDs)
+		}
+	})
+
+	t.Run("should fallback to db pull when outbox author count exceeds limit", func(t *testing.T) {
+		t.Parallel()
+
+		followRepo := &fakeFeedFollowRepo{followingIDs: []int64{1002, 1003}}
+		postRepo := &fakeFeedPostRepo{
+			posts: []*model.Post{
+				{ID: 12, UserID: 1003, Content: "db-12", Status: 1, CreatedAt: now},
+				{ID: 11, UserID: 1002, Content: "db-11", Status: 1, CreatedAt: now.Add(-time.Minute)},
+				{ID: 10, UserID: 1001, Content: "db-10", Status: 1, CreatedAt: now.Add(-2 * time.Minute)},
+			},
+		}
+		outboxRepo := &fakeFeedOutboxRepo{}
+		userCountRepo := &fakeFeedUserCountRepo{
+			followerCounts: map[int64]int64{
+				1002: 500,
+				1003: 600,
+			},
+		}
+
+		svc := NewFeedService(followRepo, postRepo).WithOutbox(
+			outboxRepo,
+			userCountRepo,
+			NewFeedHybridPolicy(100),
+			FeedOutboxOptions{
+				Enabled:           true,
+				ReadChunkSize:     2,
+				MaxAuthorsPerRead: 1,
+				DBFallbackEnabled: true,
+			},
+		)
+
+		got, gotErr := svc.GetHomeFeed(ctx, GetFeedRequest{
+			UserID: 1001,
+			Limit:  3,
+		})
+		if gotErr != nil {
+			t.Fatalf("unexpected error: %v", gotErr)
+		}
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("unexpected fallback result: %+v", got)
+		}
+		if outboxRepo.called != 0 {
+			t.Fatalf("expected outbox repo not called when author count exceeds limit, got=%d", outboxRepo.called)
+		}
+		if !containsInt64(postRepo.gotUserIDs, 1001) || !containsInt64(postRepo.gotUserIDs, 1002) || !containsInt64(postRepo.gotUserIDs, 1003) {
+			t.Fatalf("expected db fallback to include all authors, got=%v", postRepo.gotUserIDs)
 		}
 	})
 }

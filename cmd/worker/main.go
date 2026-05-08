@@ -59,6 +59,10 @@ func main() {
 			WithBatchOptions(inboxCfg.BatchSize, inboxCfg.Workers)
 		worker = worker.WithInboxFanout(inboxFanout).WithInboxCleanup(inboxCleanup)
 	}
+	if cfg.Feed.Outbox.Enabled {
+		outboxRepo := repository.NewFeedOutboxRepository(redisClient)
+		worker = worker.WithOutbox(outboxRepo, cfg.Feed.Outbox.MaxItems)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

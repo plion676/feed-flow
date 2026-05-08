@@ -367,6 +367,7 @@ go test ./...
 - [docs/architecture.md](docs/architecture.md): 架构与核心链路
 - [docs/api-overview.md](docs/api-overview.md): 接口总览
 - [docs/feed-v2-config.md](docs/feed-v2-config.md): Feed V2 配置说明
+- [docs/feed-outbox-design.md](docs/feed-outbox-design.md): Outbox 接入设计方案
 - [docs/migrate.md](docs/migrate.md): 数据迁移说明
 - [frontend/README.md](frontend/README.md): 前端演示说明
 

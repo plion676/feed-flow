@@ -41,6 +41,13 @@ type FeedService struct {
 	postRepo                feedPostRepository
 	cacheRepo               feedCacheRepository
 	inboxRepo               feedInboxRepository
+	outboxRepo              feedOutboxReadRepository
+	userCountRepo           feedUserCountRepository
+	hybridPolicy            *FeedHybridPolicy
+	outboxEnabled           bool
+	outboxReadChunkSize     int
+	outboxMaxAuthorsPerRead int
+	outboxDBFallbackEnabled bool
 	exposureRepo            feedExposureRepository
 	exposureWindowTTL       time.Duration
 	exposureBatchMultiplier int
@@ -129,6 +136,13 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 	}
 
 	allowedAuthors, allowedAuthorsErr := s.getFeedAllowedAuthorIDs(ctx, req.UserID)
+	var pullPlan feedPullPlan
+	if allowedAuthorsErr == nil {
+		pullPlan, err = s.buildFeedPullPlan(ctx, req.UserID, allowedAuthors)
+		if err != nil {
+			allowedAuthorsErr = err
+		}
+	}
 
 	var (
 		pullCandidates  feedExposureCandidates
@@ -148,6 +162,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 				batchLimit,
 				readCursor.PullPendingIDs,
 				allowedAuthors,
+				pullPlan,
 			)
 		} else {
 			err = allowedAuthorsErr
@@ -175,6 +190,7 @@ func (s *FeedService) GetHomeFeed(ctx context.Context, req GetFeedRequest) (*Fee
 				limit+1,
 				readCursor.PullPendingIDs,
 				allowedAuthors,
+				pullPlan,
 			)
 			err = pullErr
 			pullCandidates = feedExposureCandidates{
@@ -317,7 +333,11 @@ func (s *FeedService) buildRefreshFallbackResult(
 		return nil
 	}
 
-	posts, err := s.getHomeFeedByPullPosts(ctx, req.UserID, 0, limit+1)
+	allowedAuthors, allowErr := s.getFeedAllowedAuthorIDs(ctx, req.UserID)
+	if allowErr != nil {
+		return nil
+	}
+	posts, err := s.listPullPostsFromDBAuthorIDs(ctx, collectAllowedAuthorIDs(allowedAuthors), 0, limit+1)
 	if err != nil || len(posts) == 0 {
 		return nil
 	}
@@ -475,8 +495,12 @@ func (s *FeedService) getHomeFeedByPullPosts(
 	if err != nil {
 		return nil, err
 	}
+	pullPlan, err := s.buildFeedPullPlan(ctx, userID, allowedAuthors)
+	if err != nil {
+		return nil, err
+	}
 
-	return s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, lastPostID, limit, allowedAuthors)
+	return s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, lastPostID, limit, allowedAuthors, pullPlan)
 }
 
 func (s *FeedService) getHomeFeedByPullPostsWithAllowedAuthors(
@@ -485,14 +509,14 @@ func (s *FeedService) getHomeFeedByPullPostsWithAllowedAuthors(
 	lastPostID int64,
 	limit int,
 	allowedAuthors map[int64]struct{},
+	pullPlan feedPullPlan,
 ) ([]*model.Post, error) {
-	followingUserIDs := collectAllowedAuthorIDs(allowedAuthors)
-	posts, err := s.postRepo.ListByUserIDs(ctx, followingUserIDs, lastPostID, limit)
+	posts, err := s.listPullPostsWithPlan(ctx, lastPostID, limit, pullPlan)
 	if err != nil {
 		return nil, err
 	}
 
-	return posts, nil
+	return filterFeedPostsByAllowedAuthors(posts, allowedAuthors, userID), nil
 }
 
 func (s *FeedService) getHomeFeedByPullPostsWithPending(
@@ -502,6 +526,7 @@ func (s *FeedService) getHomeFeedByPullPostsWithPending(
 	limit int,
 	pendingPostIDs []int64,
 	allowedAuthors map[int64]struct{},
+	pullPlan feedPullPlan,
 ) ([]*model.Post, error) {
 	pendingPosts, ok := s.getPostsByPendingIDs(ctx, pendingPostIDs)
 	if !ok {
@@ -509,7 +534,7 @@ func (s *FeedService) getHomeFeedByPullPostsWithPending(
 	}
 	pendingPosts = filterFeedPostsByAllowedAuthors(pendingPosts, allowedAuthors, userID)
 
-	posts, err := s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, lastPostID, limit, allowedAuthors)
+	posts, err := s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, lastPostID, limit, allowedAuthors, pullPlan)
 	if err != nil {
 		return nil, err
 	}

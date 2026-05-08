@@ -54,6 +54,18 @@ type fakeWorkerInboxCleanup struct {
 	err            error
 }
 
+type fakeWorkerOutboxRepo struct {
+	addCalled    int
+	removeCalled int
+	trimCalled   int
+	gotAuthorID  int64
+	gotPostID    int64
+	gotMaxItems  int64
+	addErr       error
+	removeErr    error
+	trimErr      error
+}
+
 func (f *fakeWorkerInboxFanout) FanoutPostToFollowers(ctx context.Context, followerIDs []int64, postID int64, occurredAt int64) error {
 	f.called++
 	f.gotFollowerIDs = append([]int64{}, followerIDs...)
@@ -69,6 +81,27 @@ func (f *fakeWorkerInboxCleanup) RemovePostFromFollowers(ctx context.Context, fo
 	f.gotPostID = postID
 	f.gotStreamID = getFeedEventLogFields(ctx).StreamID
 	return f.err
+}
+
+func (f *fakeWorkerOutboxRepo) AddPostToOutbox(_ context.Context, authorUserID int64, postID int64) error {
+	f.addCalled++
+	f.gotAuthorID = authorUserID
+	f.gotPostID = postID
+	return f.addErr
+}
+
+func (f *fakeWorkerOutboxRepo) RemovePostFromOutbox(_ context.Context, authorUserID int64, postID int64) error {
+	f.removeCalled++
+	f.gotAuthorID = authorUserID
+	f.gotPostID = postID
+	return f.removeErr
+}
+
+func (f *fakeWorkerOutboxRepo) TrimOutbox(_ context.Context, authorUserID int64, maxItems int64) error {
+	f.trimCalled++
+	f.gotAuthorID = authorUserID
+	f.gotMaxItems = maxItems
+	return f.trimErr
 }
 
 func (f *fakeWorkerInvalidator) InvalidateHomeFeed(_ context.Context, userID int64) error {
@@ -222,9 +255,11 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
 		invalidator := &fakeWorkerInvalidator{}
 		fanout := &fakeWorkerInboxFanout{}
+		outbox := &fakeWorkerOutboxRepo{}
 		worker := NewFeedInvalidationWorker(followRepo, invalidator).
 			WithHybridPolicy(NewFeedHybridPolicy(100)).
-			WithInboxFanout(fanout)
+			WithInboxFanout(fanout).
+			WithOutbox(outbox, 500)
 
 		err := worker.HandlePostCreatedEvent(ctx, PostCreatedEvent{
 			StreamID:     "1740000000000-0",
@@ -244,6 +279,18 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		if fanout.gotStreamID != "1740000000000-0" {
 			t.Fatalf("unexpected fanout stream id: got=%q", fanout.gotStreamID)
 		}
+		if outbox.addCalled != 1 {
+			t.Fatalf("expected outbox add called once, got=%d", outbox.addCalled)
+		}
+		if outbox.trimCalled != 1 {
+			t.Fatalf("expected outbox trim called once, got=%d", outbox.trimCalled)
+		}
+		if outbox.gotAuthorID != 1001 || outbox.gotPostID != 3001 {
+			t.Fatalf("unexpected outbox write args: author=%d post=%d", outbox.gotAuthorID, outbox.gotPostID)
+		}
+		if outbox.gotMaxItems != 500 {
+			t.Fatalf("unexpected outbox trim max items: got=%d want=500", outbox.gotMaxItems)
+		}
 		if len(fanout.gotFollowerIDs) != len(followerIDs) {
 			t.Fatalf("unexpected fanout follower count: got=%d want=%d", len(fanout.gotFollowerIDs), len(followerIDs))
 		}
@@ -256,9 +303,11 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
 		invalidator := &fakeWorkerInvalidator{}
 		fanout := &fakeWorkerInboxFanout{}
+		outbox := &fakeWorkerOutboxRepo{}
 		worker := NewFeedInvalidationWorker(followRepo, invalidator).
 			WithHybridPolicy(NewFeedHybridPolicy(1)).
-			WithInboxFanout(fanout)
+			WithInboxFanout(fanout).
+			WithOutbox(outbox, 500)
 
 		err := worker.HandlePostCreatedEvent(ctx, PostCreatedEvent{
 			AuthorUserID: 1001,
@@ -270,6 +319,9 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		if fanout.called != 0 {
 			t.Fatalf("expected fanout not called in pull mode, got=%d", fanout.called)
 		}
+		if outbox.addCalled != 1 {
+			t.Fatalf("expected outbox add in pull mode, got=%d", outbox.addCalled)
+		}
 	})
 
 	t.Run("post deleted should invalidate followers without inbox fanout", func(t *testing.T) {
@@ -280,10 +332,12 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		invalidator := &fakeWorkerInvalidator{}
 		fanout := &fakeWorkerInboxFanout{}
 		cleanup := &fakeWorkerInboxCleanup{}
+		outbox := &fakeWorkerOutboxRepo{}
 		worker := NewFeedInvalidationWorker(followRepo, invalidator).
 			WithHybridPolicy(NewFeedHybridPolicy(100)).
 			WithInboxFanout(fanout).
-			WithInboxCleanup(cleanup)
+			WithInboxCleanup(cleanup).
+			WithOutbox(outbox, 500)
 
 		err := worker.HandlePostDeletedEvent(ctx, PostLifecycleEvent{
 			StreamID:     "1740000000001-0",
@@ -305,8 +359,64 @@ func TestFeedInvalidationWorkerHandlePostCreated(t *testing.T) {
 		if cleanup.gotStreamID != "1740000000001-0" {
 			t.Fatalf("unexpected cleanup stream id: got=%q", cleanup.gotStreamID)
 		}
+		if outbox.removeCalled != 1 {
+			t.Fatalf("expected outbox remove called once, got=%d", outbox.removeCalled)
+		}
+		if outbox.gotAuthorID != 1001 || outbox.gotPostID != 3001 {
+			t.Fatalf("unexpected outbox remove args: author=%d post=%d", outbox.gotAuthorID, outbox.gotPostID)
+		}
 		if invalidator.CalledCount() != len(followerIDs) {
 			t.Fatalf("unexpected invalidation call count: got=%d want=%d", invalidator.CalledCount(), len(followerIDs))
+		}
+	})
+
+	t.Run("outbox add failure should return early", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{}
+		outbox := &fakeWorkerOutboxRepo{addErr: errors.New("redis down")}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithOutbox(outbox, 500)
+
+		err := worker.HandlePostCreatedEvent(ctx, PostLifecycleEvent{
+			AuthorUserID: 1001,
+			PostID:       3001,
+		})
+		if err == nil {
+			t.Fatal("expected outbox add error")
+		}
+		if followRepo.called != 0 {
+			t.Fatalf("follow repo should not be called after outbox failure, got=%d", followRepo.called)
+		}
+		if invalidator.CalledCount() != 0 {
+			t.Fatalf("invalidator should not be called after outbox failure, got=%d", invalidator.CalledCount())
+		}
+	})
+
+	t.Run("outbox remove failure should return early", func(t *testing.T) {
+		t.Parallel()
+
+		followerIDs := []int64{2001, 2002}
+		followRepo := &fakeWorkerFollowRepo{followerIDs: followerIDs}
+		invalidator := &fakeWorkerInvalidator{}
+		outbox := &fakeWorkerOutboxRepo{removeErr: errors.New("redis down")}
+		worker := NewFeedInvalidationWorker(followRepo, invalidator).
+			WithOutbox(outbox, 500)
+
+		err := worker.HandlePostDeletedEvent(ctx, PostLifecycleEvent{
+			AuthorUserID: 1001,
+			PostID:       3001,
+		})
+		if err == nil {
+			t.Fatal("expected outbox remove error")
+		}
+		if followRepo.called != 0 {
+			t.Fatalf("follow repo should not be called after outbox remove failure, got=%d", followRepo.called)
+		}
+		if invalidator.CalledCount() != 0 {
+			t.Fatalf("invalidator should not be called after outbox remove failure, got=%d", invalidator.CalledCount())
 		}
 	})
 

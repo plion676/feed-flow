@@ -40,6 +40,8 @@ type FeedInvalidationWorker struct {
 	hybridPolicy    *FeedHybridPolicy
 	inboxFanout     workerFeedInboxFanout
 	inboxCleanup    workerFeedInboxCleanup
+	outboxRepo      feedOutboxRepository
+	outboxMaxItems  int64
 }
 
 const defaultFollowerInvalidationWorkers = 20
@@ -75,6 +77,12 @@ func (w *FeedInvalidationWorker) WithInboxCleanup(inboxCleanup workerFeedInboxCl
 	return w
 }
 
+func (w *FeedInvalidationWorker) WithOutbox(outboxRepo feedOutboxRepository, maxItems int64) *FeedInvalidationWorker {
+	w.outboxRepo = outboxRepo
+	w.outboxMaxItems = maxItems
+	return w
+}
+
 func (w *FeedInvalidationWorker) HandlePostCreatedEvent(ctx context.Context, event PostLifecycleEvent) error {
 	return w.handlePostLifecycleEvent(ctx, event, true, false)
 }
@@ -95,6 +103,24 @@ func (w *FeedInvalidationWorker) handlePostLifecycleEvent(
 	}
 	if w.followRepo == nil || w.feedInvalidator == nil {
 		return fmt.Errorf("feed invalidation worker dependencies are not configured")
+	}
+
+	if event.PostID > 0 && w.outboxRepo != nil {
+		switch {
+		case allowInboxFanout:
+			if err := w.outboxRepo.AddPostToOutbox(ctx, authorUserID, event.PostID); err != nil {
+				return fmt.Errorf("add post to outbox author_id=%d post_id=%d: %w", authorUserID, event.PostID, err)
+			}
+			if w.outboxMaxItems > 0 {
+				if err := w.outboxRepo.TrimOutbox(ctx, authorUserID, w.outboxMaxItems); err != nil {
+					return fmt.Errorf("trim outbox author_id=%d post_id=%d: %w", authorUserID, event.PostID, err)
+				}
+			}
+		case allowInboxCleanup:
+			if err := w.outboxRepo.RemovePostFromOutbox(ctx, authorUserID, event.PostID); err != nil {
+				return fmt.Errorf("remove post from outbox author_id=%d post_id=%d: %w", authorUserID, event.PostID, err)
+			}
+		}
 	}
 
 	followerIDs, err := w.followRepo.ListFollowerUserIDs(ctx, authorUserID)

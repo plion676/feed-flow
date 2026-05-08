@@ -63,6 +63,7 @@ func (s *FeedService) collectPullExposureCandidates(
 	batchLimit int,
 	pendingPostIDs []int64,
 	allowedAuthors map[int64]struct{},
+	pullPlan feedPullPlan,
 ) (feedExposureCandidates, error) {
 	result := feedExposureCandidates{
 		nextCursor: lastPostID,
@@ -83,7 +84,7 @@ func (s *FeedService) collectPullExposureCandidates(
 
 	cursor := lastPostID
 	for len(collected) < targetCount {
-		posts, err := s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, cursor, batchLimit, allowedAuthors)
+		posts, err := s.getHomeFeedByPullPostsWithAllowedAuthors(ctx, userID, cursor, batchLimit, allowedAuthors, pullPlan)
 		if err != nil {
 			return result, err
 		}

@@ -516,6 +516,8 @@ feed:
 1. 混排参数是全局配置，不是按用户分群配置
 2. exposure 只按 `post_id` 做最近曝光去重，没有更复杂的召回打散
 3. push fanout 仍是朴素写法，后续应做 pipeline / 幂等优化
+4. pull 数据源当前仍以 `posts` 为主，作者级 `outbox` 设计见：
+   - `docs/feed-outbox-design.md`
 
 ## 7. 下一步建议
 
