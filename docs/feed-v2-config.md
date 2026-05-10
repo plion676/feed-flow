@@ -516,7 +516,14 @@ feed:
 1. 混排参数是全局配置，不是按用户分群配置
 2. exposure 只按 `post_id` 做最近曝光去重，没有更复杂的召回打散
 3. push fanout 仍是朴素写法，后续应做 pipeline / 幂等优化
-4. pull 数据源当前仍以 `posts` 为主，作者级 `outbox` 设计见：
+4. `user_counts` 当前只在注册时初始化，发帖、关注、取关链路还没有持续维护：
+   - `post_count`
+   - `following_count`
+   - `follower_count`
+   这会导致：
+   - 个人主页计数可能不准确
+   - 基于 `follower_count` 的 feed 分流判断可能与真实关注关系不一致
+5. pull 数据源当前仍以 `posts` 为主，作者级 `outbox` 设计见：
    - `docs/feed-outbox-design.md`
 
 ## 7. 下一步建议
