@@ -17,6 +17,7 @@ import (
 	jwtpkg "github.com/plion676/feed-flow/internal/pkg/jwt"
 	"github.com/plion676/feed-flow/internal/pkg/xerror"
 	"github.com/plion676/feed-flow/internal/service"
+	"gorm.io/gorm"
 )
 
 type fakePostRepoForHandler struct {
@@ -40,6 +41,10 @@ func (r *fakePostRepoForHandler) Create(_ context.Context, post *model.Post) err
 	r.posts[post.ID] = &copied
 	r.nextID++
 	return nil
+}
+
+func (r *fakePostRepoForHandler) CreateTx(ctx context.Context, _ *gorm.DB, post *model.Post) error {
+	return r.Create(ctx, post)
 }
 
 func (r *fakePostRepoForHandler) GetByID(_ context.Context, postID int64) (*model.Post, error) {
@@ -66,6 +71,10 @@ func (r *fakePostRepoForHandler) SoftDeleteByIDAndUserID(_ context.Context, post
 	post.Status = model.PostStatusDeleted
 	post.UpdatedAt = time.Date(2026, 4, 20, 13, 30, 0, 0, time.UTC)
 	return true, nil
+}
+
+func (r *fakePostRepoForHandler) SoftDeleteByIDAndUserIDTx(ctx context.Context, _ *gorm.DB, postID int64, userID int64) (bool, error) {
+	return r.SoftDeleteByIDAndUserID(ctx, postID, userID)
 }
 
 type postAPIResponse struct {

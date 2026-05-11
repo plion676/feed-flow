@@ -15,6 +15,7 @@ import (
 
 const feedInvalidationStreamKey = "feed:invalidation:events"
 const defaultFeedInvalidationDLQStreamKey = "feed:invalidation:dlq"
+const defaultFeedInvalidationOutboxPublishLockTTL = 7 * 24 * time.Hour
 
 const (
 	FeedInvalidationEventTypePostCreated = "post_created"
@@ -171,6 +172,36 @@ func (r *FeedInvalidationEventRepository) PublishPostCreatedEvent(ctx context.Co
 
 func (r *FeedInvalidationEventRepository) PublishPostDeletedEvent(ctx context.Context, authorUserID int64, postID int64) error {
 	return r.publishPostEvent(ctx, FeedInvalidationEventTypePostDeleted, authorUserID, postID)
+}
+
+func (r *FeedInvalidationEventRepository) PublishEventPayload(ctx context.Context, outboxEventID int64, payload string) error {
+	if outboxEventID <= 0 {
+		return fmt.Errorf("outbox event id must be positive")
+	}
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return fmt.Errorf("payload cannot be empty")
+	}
+
+	lockKey := buildOutboxPublishLockKey(outboxEventID)
+	locked, err := r.client.SetNX(ctx, lockKey, "1", defaultFeedInvalidationOutboxPublishLockTTL).Result()
+	if err != nil {
+		return fmt.Errorf("setnx outbox publish lock key=%s outbox_event_id=%d: %w", lockKey, outboxEventID, err)
+	}
+	if !locked {
+		return nil
+	}
+
+	if err := r.client.XAdd(ctx, &redis.XAddArgs{
+		Stream: feedInvalidationStreamKey,
+		Values: map[string]any{
+			"payload": payload,
+		},
+	}).Err(); err != nil {
+		_ = r.client.Del(ctx, lockKey).Err()
+		return fmt.Errorf("xadd feed invalidation stream outbox_event_id=%d: %w", outboxEventID, err)
+	}
+	return nil
 }
 
 func (r *FeedInvalidationEventRepository) publishPostEvent(ctx context.Context, eventType string, authorUserID int64, postID int64) error {
@@ -666,6 +697,10 @@ func decodeDLQRecord(msg redis.XMessage) (FeedInvalidationDLQRecord, error) {
 
 func buildDLQReplayLockKey(dlqMessageID string) string {
 	return fmt.Sprintf("feed:invalidation:dlq:replay:%s", dlqMessageID)
+}
+
+func buildOutboxPublishLockKey(outboxEventID int64) string {
+	return fmt.Sprintf("feed:invalidation:outbox:published:%d", outboxEventID)
 }
 
 func (r *FeedInvalidationEventRepository) ensureConsumerGroup(ctx context.Context) error {

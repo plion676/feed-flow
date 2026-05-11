@@ -28,11 +28,16 @@ type userFollowReadRepository interface {
 	ListFollowerRelations(ctx context.Context, targetUserID int64, lastFollowID int64, limit int) ([]*model.Follow, error)
 }
 
+type userCountReadRepository interface {
+	GetByUserID(ctx context.Context, userID int64) (*model.UserCount, error)
+}
+
 // UserService handles user profile related read operations.
 type UserService struct {
-	userRepo   userReadRepository
-	postRepo   userPostReadRepository
-	followRepo userFollowReadRepository
+	userRepo      userReadRepository
+	postRepo      userPostReadRepository
+	followRepo    userFollowReadRepository
+	userCountRepo userCountReadRepository
 }
 
 type MeResult struct {
@@ -44,8 +49,8 @@ type MeResult struct {
 }
 
 const (
-	defaultUserPostsLimit = 20
-	maxUserPostsLimit     = 50
+	defaultUserPostsLimit      = 20
+	maxUserPostsLimit          = 50
 	defaultUserFollowListLimit = 20
 	maxUserFollowListLimit     = 50
 )
@@ -89,18 +94,18 @@ type UserFollowListRequest struct {
 }
 
 type UserFollowListItem struct {
-	UserID   int64  `json:"user_id"`
-	Username string `json:"username"`
-	Nickname string `json:"nickname"`
-	Avatar   string `json:"avatar"`
-	Bio      string `json:"bio"`
-	IsFollowing bool `json:"is_following"`
+	UserID      int64  `json:"user_id"`
+	Username    string `json:"username"`
+	Nickname    string `json:"nickname"`
+	Avatar      string `json:"avatar"`
+	Bio         string `json:"bio"`
+	IsFollowing bool   `json:"is_following"`
 }
 
 type UserFollowListResult struct {
 	Items      []UserFollowListItem `json:"items"`
-	NextCursor int64               `json:"next_cursor"`
-	HasMore    bool                `json:"has_more"`
+	NextCursor int64                `json:"next_cursor"`
+	HasMore    bool                 `json:"has_more"`
 }
 
 func NewUserService(userRepo userReadRepository) *UserService {
@@ -114,6 +119,11 @@ func (s *UserService) WithPostRepository(postRepo userPostReadRepository) *UserS
 
 func (s *UserService) WithFollowRepository(followRepo userFollowReadRepository) *UserService {
 	s.followRepo = followRepo
+	return s
+}
+
+func (s *UserService) WithUserCountRepository(userCountRepo userCountReadRepository) *UserService {
+	s.userCountRepo = userCountRepo
 	return s
 }
 
@@ -160,17 +170,7 @@ func (s *UserService) GetUserProfile(ctx context.Context, req GetUserProfileRequ
 		return nil, xerror.ErrNotFound
 	}
 
-	followingCount, err := s.followRepo.CountFollowing(ctx, req.UserID)
-	if err != nil {
-		return nil, xerror.ErrInternal
-	}
-
-	followerCount, err := s.followRepo.CountFollowers(ctx, req.UserID)
-	if err != nil {
-		return nil, xerror.ErrInternal
-	}
-
-	postCount, err := s.postRepo.CountPublishedByUserID(ctx, req.UserID)
+	followingCount, followerCount, postCount, err := s.resolveUserProfileCounts(ctx, req.UserID)
 	if err != nil {
 		return nil, xerror.ErrInternal
 	}
@@ -194,6 +194,35 @@ func (s *UserService) GetUserProfile(ctx context.Context, req GetUserProfileRequ
 		PostCount:      postCount,
 		IsFollowing:    isFollowing,
 	}, nil
+}
+
+func (s *UserService) resolveUserProfileCounts(ctx context.Context, userID int64) (int64, int64, int64, error) {
+	if s.userCountRepo != nil {
+		userCount, err := s.userCountRepo.GetByUserID(ctx, userID)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		if userCount != nil {
+			return userCount.FollowingCount, userCount.FollowerCount, userCount.PostCount, nil
+		}
+	}
+
+	followingCount, err := s.followRepo.CountFollowing(ctx, userID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	followerCount, err := s.followRepo.CountFollowers(ctx, userID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	postCount, err := s.postRepo.CountPublishedByUserID(ctx, userID)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return followingCount, followerCount, postCount, nil
 }
 
 func (s *UserService) GetUserPosts(ctx context.Context, req GetUserPostsRequest) (*UserPostsResult, *xerror.Error) {

@@ -45,9 +45,12 @@ func main() {
 	}
 
 	followRepo := repository.NewFollowRepository(db)
+	feedEventOutboxRepo := repository.NewFeedEventOutboxRepository(db)
 	feedInvalidator := repository.NewFeedCacheInvalidatorRepository(redisClient)
 	eventRepo := repository.NewFeedInvalidationEventRepository(redisClient)
 	eventRepo = eventRepo.WithConsumerConfig(buildEventConsumerConfig(cfg))
+	outboxRelay := service.NewFeedEventOutboxRelay(feedEventOutboxRepo, eventRepo).
+		WithBatchSize(50)
 	worker := service.NewFeedInvalidationWorker(followRepo, feedInvalidator).
 		WithHybridPolicy(service.NewFeedHybridPolicy(cfg.Feed.Hybrid.PushFollowerThreshold))
 	if cfg.Feed.Inbox.Enabled {
@@ -68,6 +71,13 @@ func main() {
 	defer cancel()
 
 	log.Println("feed invalidation worker started")
+	go func() {
+		if err := outboxRelay.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("feed event outbox relay stopped with error: %v", err)
+			cancel()
+		}
+	}()
+
 	retryCfg := buildRetryConfig(cfg)
 	retryCount := 0
 	backoff := retryCfg.InitialBackoff

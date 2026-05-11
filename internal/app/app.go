@@ -50,10 +50,10 @@ func New(cfg *Config) *App {
 	postRepo := repository.NewPostRepository(db)
 	postInteractionRepo := repository.NewPostInteractionRepository(db)
 	followRepo := repository.NewFollowRepository(db)
+	feedEventOutboxRepo := repository.NewFeedEventOutboxRepository(db)
 	feedDLQOperatorRepo := repository.NewFeedDLQOperatorRepository(db)
 	var feedCacheRepo *repository.FeedCacheRepository
 	var feedCacheInvalidator *repository.FeedCacheInvalidatorRepository
-	var feedInvalidationEventPub *repository.FeedInvalidationEventRepository
 	var feedInboxRepo *repository.FeedInboxRepository
 	var feedOutboxRepo *repository.FeedOutboxRepository
 	var feedExposureRepo *repository.FeedExposureRepository
@@ -63,7 +63,6 @@ func New(cfg *Config) *App {
 	} else {
 		feedCacheRepo = repository.NewFeedCacheRepository(redisClient)
 		feedCacheInvalidator = repository.NewFeedCacheInvalidatorRepository(redisClient)
-		feedInvalidationEventPub = repository.NewFeedInvalidationEventRepository(redisClient)
 		feedInboxRepo = repository.NewFeedInboxRepository(redisClient)
 		if cfg.Feed.Outbox.Enabled {
 			feedOutboxRepo = repository.NewFeedOutboxRepository(redisClient)
@@ -78,10 +77,11 @@ func New(cfg *Config) *App {
 	authService := service.NewAuthService(db, userRepo, userCountRepo, jwtManager)
 	userService := service.NewUserService(userRepo).
 		WithPostRepository(postRepo).
-		WithFollowRepository(followRepo)
-	postService := service.NewPostService(postRepo)
+		WithFollowRepository(followRepo).
+		WithUserCountRepository(userCountRepo)
+	postService := service.NewPostServiceWithTransaction(service.NewGormTransactionRunner(db), postRepo, userCountRepo)
 	postInteractionService := service.NewPostInteractionService(postRepo, postInteractionRepo)
-	followService := service.NewFollowService(followRepo, userRepo)
+	followService := service.NewFollowServiceWithTransaction(service.NewGormTransactionRunner(db), followRepo, userRepo, userCountRepo)
 	feedService := service.NewFeedService(followRepo, postRepo)
 	if feedCacheRepo != nil {
 		feedService = feedService.WithCache(feedCacheRepo)
@@ -128,9 +128,7 @@ func New(cfg *Config) *App {
 			service.NewFeedInboxAuthorCleanup(feedInboxRepo, postRepo),
 		)
 	}
-	if feedInvalidationEventPub != nil {
-		postService = postService.WithFeedInvalidationEventPublisher(feedInvalidationEventPub)
-	}
+	postService = postService.WithEventOutbox(feedEventOutboxRepo)
 
 	authHandler := handler.NewAuthHandler(authService)
 	userHandler := handler.NewUserHandler(userService)
@@ -139,7 +137,8 @@ func New(cfg *Config) *App {
 	followHandler := handler.NewFollowHandler(followService)
 	feedHandler := handler.NewFeedHandler(feedService)
 	var feedDLQHandler *handler.FeedDLQHandler
-	if feedInvalidationEventPub != nil {
+	if redisClient != nil {
+		feedInvalidationEventPub := repository.NewFeedInvalidationEventRepository(redisClient)
 		feedDLQService := service.NewFeedDLQService(feedInvalidationEventPub)
 		feedDLQAccessService := service.NewFeedDLQAccessService(feedDLQOperatorRepo)
 		feedDLQHandler = handler.NewFeedDLQHandler(feedDLQService, feedDLQAccessService)

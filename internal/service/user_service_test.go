@@ -91,18 +91,25 @@ func (r *fakeUserPostReadRepoForService) CountPublishedByUserID(_ context.Contex
 }
 
 type fakeUserFollowReadRepoForService struct {
-	followingCountByUser map[int64]int64
-	followerCountByUser  map[int64]int64
-	followExistsByPair   map[string]bool
-	followingUserIDsByUser map[int64][]int64
-	followerUserIDsByUser  map[int64][]int64
+	followingCountByUser     map[int64]int64
+	followerCountByUser      map[int64]int64
+	followExistsByPair       map[string]bool
+	followingUserIDsByUser   map[int64][]int64
+	followerUserIDsByUser    map[int64][]int64
 	followingRelationsByUser map[int64][]*model.Follow
 	followerRelationsByUser  map[int64][]*model.Follow
-	err                  error
-	gotFollowingUserID   int64
-	gotFollowerUserID    int64
-	gotExistsUserID      int64
-	gotExistsTargetID    int64
+	err                      error
+	gotFollowingUserID       int64
+	gotFollowerUserID        int64
+	gotExistsUserID          int64
+	gotExistsTargetID        int64
+}
+
+type fakeUserCountReadRepoForService struct {
+	counts    map[int64]*model.UserCount
+	err       error
+	gotUserID int64
+	called    int
 }
 
 func (r *fakeUserFollowReadRepoForService) CountFollowing(_ context.Context, userID int64) (int64, error) {
@@ -128,6 +135,15 @@ func (r *fakeUserFollowReadRepoForService) Exists(_ context.Context, userID int6
 		return false, r.err
 	}
 	return r.followExistsByPair[followExistsKey(userID, targetUserID)], nil
+}
+
+func (r *fakeUserCountReadRepoForService) GetByUserID(_ context.Context, userID int64) (*model.UserCount, error) {
+	r.called++
+	r.gotUserID = userID
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.counts[userID], nil
 }
 
 func (r *fakeUserFollowReadRepoForService) ListFollowingUserIDs(_ context.Context, userID int64) ([]int64, error) {
@@ -196,6 +212,7 @@ func TestUserServiceGetUserProfile(t *testing.T) {
 		userRepo           *fakeUserReadRepoForService
 		postRepo           *fakeUserPostReadRepoForService
 		followRepo         *fakeUserFollowReadRepoForService
+		userCountRepo      *fakeUserCountReadRepoForService
 		viewerUserID       int64
 		wantErr            *xerror.Error
 		wantFollowingCount int64
@@ -272,6 +289,21 @@ func TestUserServiceGetUserProfile(t *testing.T) {
 			wantErr: xerror.ErrInternal,
 		},
 		{
+			name:   "internal error when user count repo fails",
+			userID: 1001,
+			userRepo: &fakeUserReadRepoForService{
+				users: map[int64]*model.User{
+					1001: {ID: 1001, Username: "alice"},
+				},
+			},
+			postRepo:   &fakeUserPostReadRepoForService{},
+			followRepo: &fakeUserFollowReadRepoForService{},
+			userCountRepo: &fakeUserCountReadRepoForService{
+				err: errors.New("query user count failed"),
+			},
+			wantErr: xerror.ErrInternal,
+		},
+		{
 			name:   "internal error when post count fails",
 			userID: 1001,
 			userRepo: &fakeUserReadRepoForService{
@@ -321,6 +353,43 @@ func TestUserServiceGetUserProfile(t *testing.T) {
 			wantPostCount:      2,
 		},
 		{
+			name:   "success prefers user counts snapshot",
+			userID: 1001,
+			userRepo: &fakeUserReadRepoForService{
+				users: map[int64]*model.User{
+					1001: {
+						ID:       1001,
+						Username: "alice",
+						Nickname: "Alice",
+					},
+				},
+			},
+			postRepo: &fakeUserPostReadRepoForService{
+				postsByUser: map[int64][]*model.Post{
+					1001: {
+						{ID: 9, UserID: 1001, Status: model.PostStatusPublished},
+					},
+				},
+			},
+			followRepo: &fakeUserFollowReadRepoForService{
+				followingCountByUser: map[int64]int64{1001: 999},
+				followerCountByUser:  map[int64]int64{1001: 999},
+			},
+			userCountRepo: &fakeUserCountReadRepoForService{
+				counts: map[int64]*model.UserCount{
+					1001: {
+						UserID:         1001,
+						FollowingCount: 6,
+						FollowerCount:  12,
+						PostCount:      3,
+					},
+				},
+			},
+			wantFollowingCount: 6,
+			wantFollowerCount:  12,
+			wantPostCount:      3,
+		},
+		{
 			name:         "success with viewer following author",
 			userID:       1001,
 			viewerUserID: 2002,
@@ -367,6 +436,9 @@ func TestUserServiceGetUserProfile(t *testing.T) {
 			if tc.followRepo != nil {
 				svc = svc.WithFollowRepository(tc.followRepo)
 			}
+			if tc.userCountRepo != nil {
+				svc = svc.WithUserCountRepository(tc.userCountRepo)
+			}
 
 			got, gotErr := svc.GetUserProfile(ctx, GetUserProfileRequest{
 				UserID:       tc.userID,
@@ -402,10 +474,17 @@ func TestUserServiceGetUserProfile(t *testing.T) {
 				t.Fatalf("unexpected is_following: got=%v want=%v", got.IsFollowing, tc.wantIsFollowing)
 			}
 			if tc.followRepo.gotFollowingUserID != tc.userID || tc.followRepo.gotFollowerUserID != tc.userID {
-				t.Fatalf("unexpected follow repo user ids: following=%d follower=%d want=%d", tc.followRepo.gotFollowingUserID, tc.followRepo.gotFollowerUserID, tc.userID)
+				if tc.userCountRepo == nil || tc.userCountRepo.counts[tc.userID] == nil {
+					t.Fatalf("unexpected follow repo user ids: following=%d follower=%d want=%d", tc.followRepo.gotFollowingUserID, tc.followRepo.gotFollowerUserID, tc.userID)
+				}
 			}
 			if tc.postRepo.gotUserID != tc.userID {
-				t.Fatalf("unexpected post repo user id: got=%d want=%d", tc.postRepo.gotUserID, tc.userID)
+				if tc.userCountRepo == nil || tc.userCountRepo.counts[tc.userID] == nil {
+					t.Fatalf("unexpected post repo user id: got=%d want=%d", tc.postRepo.gotUserID, tc.userID)
+				}
+			}
+			if tc.userCountRepo != nil && tc.userCountRepo.called > 0 && tc.userCountRepo.gotUserID != tc.userID {
+				t.Fatalf("unexpected user count repo user id: got=%d want=%d", tc.userCountRepo.gotUserID, tc.userID)
 			}
 			if tc.wantCheckFollow {
 				if tc.followRepo.gotExistsUserID != tc.viewerUserID || tc.followRepo.gotExistsTargetID != tc.userID {

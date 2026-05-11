@@ -19,6 +19,10 @@ func (r *PostRepository) Create(ctx context.Context, post *model.Post) error {
 	return r.db.WithContext(ctx).Create(post).Error
 }
 
+func (r *PostRepository) CreateTx(ctx context.Context, tx *gorm.DB, post *model.Post) error {
+	return tx.WithContext(ctx).Create(post).Error
+}
+
 func (r *PostRepository) GetByID(ctx context.Context, postID int64) (*model.Post, error) {
 	var post model.Post
 	err := r.db.WithContext(ctx).Where("id = ?", postID).First(&post).Error
@@ -34,6 +38,18 @@ func (r *PostRepository) GetByID(ctx context.Context, postID int64) (*model.Post
 
 func (r *PostRepository) SoftDeleteByIDAndUserID(ctx context.Context, postID int64, userID int64) (bool, error) {
 	result := r.db.WithContext(ctx).
+		Model(&model.Post{}).
+		Where("id = ? AND user_id = ? AND status = ?", postID, userID, model.PostStatusPublished).
+		Update("status", model.PostStatusDeleted)
+	if result.Error != nil {
+		return false, result.Error
+	}
+
+	return result.RowsAffected > 0, nil
+}
+
+func (r *PostRepository) SoftDeleteByIDAndUserIDTx(ctx context.Context, tx *gorm.DB, postID int64, userID int64) (bool, error) {
+	result := tx.WithContext(ctx).
 		Model(&model.Post{}).
 		Where("id = ? AND user_id = ? AND status = ?", postID, userID, model.PostStatusPublished).
 		Update("status", model.PostStatusDeleted)

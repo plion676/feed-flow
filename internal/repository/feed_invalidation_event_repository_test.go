@@ -299,3 +299,13 @@ func TestBuildDLQReplayLockKey(t *testing.T) {
 		t.Fatalf("unexpected replay lock key: got=%s want=%s", got, want)
 	}
 }
+
+func TestBuildOutboxPublishLockKey(t *testing.T) {
+	t.Parallel()
+
+	got := buildOutboxPublishLockKey(123)
+	want := "feed:invalidation:outbox:published:123"
+	if got != want {
+		t.Fatalf("unexpected outbox publish lock key: got=%s want=%s", got, want)
+	}
+}

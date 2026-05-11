@@ -13,6 +13,7 @@ import (
 type fakeFollowRepo struct {
 	createErr error
 	deleteErr error
+	deleted   bool
 
 	createCalled int
 	deleteCalled int
@@ -33,11 +34,22 @@ func (r *fakeFollowRepo) Create(_ context.Context, follow *model.Follow) error {
 	return r.createErr
 }
 
-func (r *fakeFollowRepo) Delete(_ context.Context, userID int64, targetUserID int64) error {
+func (r *fakeFollowRepo) CreateTx(ctx context.Context, _ *gorm.DB, follow *model.Follow) error {
+	return r.Create(ctx, follow)
+}
+
+func (r *fakeFollowRepo) Delete(_ context.Context, userID int64, targetUserID int64) (bool, error) {
 	r.deleteCalled++
 	r.lastDelete.userID = userID
 	r.lastDelete.targetUserID = targetUserID
-	return r.deleteErr
+	if r.deleteErr != nil {
+		return false, r.deleteErr
+	}
+	return r.deleted, nil
+}
+
+func (r *fakeFollowRepo) DeleteTx(ctx context.Context, _ *gorm.DB, userID int64, targetUserID int64) (bool, error) {
+	return r.Delete(ctx, userID, targetUserID)
 }
 
 type fakeFollowUserRepo struct {
@@ -65,6 +77,18 @@ type fakeFollowInboxCleanup struct {
 	err             error
 }
 
+type fakeFollowUserCountRepo struct {
+	followingCalls []fakeFollowCountCall
+	followerCalls  []fakeFollowCountCall
+	followingErr   error
+	followerErr    error
+}
+
+type fakeFollowCountCall struct {
+	userID int64
+	delta  int64
+}
+
 func (f *fakeFollowFeedInvalidator) InvalidateHomeFeed(_ context.Context, userID int64) error {
 	f.called++
 	f.gotUserID = userID
@@ -76,6 +100,16 @@ func (f *fakeFollowInboxCleanup) RemoveAuthorPostsFromInbox(_ context.Context, u
 	f.gotUserID = userID
 	f.gotAuthorUserID = authorUserID
 	return f.err
+}
+
+func (r *fakeFollowUserCountRepo) AddFollowingCountTx(_ context.Context, _ *gorm.DB, userID int64, delta int64) error {
+	r.followingCalls = append(r.followingCalls, fakeFollowCountCall{userID: userID, delta: delta})
+	return r.followingErr
+}
+
+func (r *fakeFollowUserCountRepo) AddFollowerCountTx(_ context.Context, _ *gorm.DB, userID int64, delta int64) error {
+	r.followerCalls = append(r.followerCalls, fakeFollowCountCall{userID: userID, delta: delta})
+	return r.followerErr
 }
 
 func TestFollowServiceFollow(t *testing.T) {
@@ -212,7 +246,7 @@ func TestFollowServiceUnfollow(t *testing.T) {
 			name:             "success should invalidate feed cache",
 			userID:           1001,
 			targetUserID:     2001,
-			followRepo:       &fakeFollowRepo{},
+			followRepo:       &fakeFollowRepo{deleted: true},
 			invalidator:      &fakeFollowFeedInvalidator{},
 			inboxCleanup:     &fakeFollowInboxCleanup{},
 			wantDeleteCalled: true,
@@ -223,7 +257,7 @@ func TestFollowServiceUnfollow(t *testing.T) {
 			name:             "success even when invalidator fails",
 			userID:           1001,
 			targetUserID:     2001,
-			followRepo:       &fakeFollowRepo{},
+			followRepo:       &fakeFollowRepo{deleted: true},
 			invalidator:      &fakeFollowFeedInvalidator{err: errors.New("cache down")},
 			inboxCleanup:     &fakeFollowInboxCleanup{},
 			wantDeleteCalled: true,
@@ -234,7 +268,7 @@ func TestFollowServiceUnfollow(t *testing.T) {
 			name:             "success even when inbox cleanup fails",
 			userID:           1001,
 			targetUserID:     2001,
-			followRepo:       &fakeFollowRepo{},
+			followRepo:       &fakeFollowRepo{deleted: true},
 			invalidator:      &fakeFollowFeedInvalidator{},
 			inboxCleanup:     &fakeFollowInboxCleanup{err: errors.New("cleanup down")},
 			wantDeleteCalled: true,
@@ -284,5 +318,115 @@ func TestFollowServiceUnfollow(t *testing.T) {
 				t.Fatalf("unexpected inbox cleanup author id: got=%d want=%d", tc.inboxCleanup.gotAuthorUserID, tc.targetUserID)
 			}
 		})
+	}
+}
+
+func TestFollowServiceFollowMaintainsUserCountsInTransaction(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	followRepo := &fakeFollowRepo{}
+	userRepo := &fakeFollowUserRepo{user: &model.User{ID: 2001}}
+	userCountRepo := &fakeFollowUserCountRepo{}
+	txRunner := &fakeTransactionRunner{}
+	invalidator := &fakeFollowFeedInvalidator{}
+
+	svc := NewFollowServiceWithTransaction(txRunner, followRepo, userRepo, userCountRepo).
+		WithFeedCacheInvalidator(invalidator)
+
+	gotErr := svc.Follow(ctx, 1001, 2001)
+
+	if gotErr != nil {
+		t.Fatalf("unexpected error: %v", gotErr)
+	}
+	if txRunner.called != 1 {
+		t.Fatalf("expected transaction runner called once, got=%d", txRunner.called)
+	}
+	if len(userCountRepo.followingCalls) != 1 {
+		t.Fatalf("expected one following count update, got=%d", len(userCountRepo.followingCalls))
+	}
+	if len(userCountRepo.followerCalls) != 1 {
+		t.Fatalf("expected one follower count update, got=%d", len(userCountRepo.followerCalls))
+	}
+	if userCountRepo.followingCalls[0].userID != 1001 || userCountRepo.followingCalls[0].delta != 1 {
+		t.Fatalf("unexpected following count update: %+v", userCountRepo.followingCalls[0])
+	}
+	if userCountRepo.followerCalls[0].userID != 2001 || userCountRepo.followerCalls[0].delta != 1 {
+		t.Fatalf("unexpected follower count update: %+v", userCountRepo.followerCalls[0])
+	}
+	if invalidator.called != 1 {
+		t.Fatalf("expected invalidator called once, got=%d", invalidator.called)
+	}
+}
+
+func TestFollowServiceUnfollowMaintainsUserCountsOnlyWhenDeleted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	followRepo := &fakeFollowRepo{deleted: true}
+	userCountRepo := &fakeFollowUserCountRepo{}
+	txRunner := &fakeTransactionRunner{}
+	invalidator := &fakeFollowFeedInvalidator{}
+	cleanup := &fakeFollowInboxCleanup{}
+
+	svc := NewFollowServiceWithTransaction(txRunner, followRepo, &fakeFollowUserRepo{}, userCountRepo).
+		WithFeedCacheInvalidator(invalidator).
+		WithInboxAuthorCleanup(cleanup)
+
+	gotErr := svc.Unfollow(ctx, 1001, 2001)
+
+	if gotErr != nil {
+		t.Fatalf("unexpected error: %v", gotErr)
+	}
+	if txRunner.called != 1 {
+		t.Fatalf("expected transaction runner called once, got=%d", txRunner.called)
+	}
+	if len(userCountRepo.followingCalls) != 1 || len(userCountRepo.followerCalls) != 1 {
+		t.Fatalf("expected one decrement for both counters, got following=%d follower=%d", len(userCountRepo.followingCalls), len(userCountRepo.followerCalls))
+	}
+	if userCountRepo.followingCalls[0].userID != 1001 || userCountRepo.followingCalls[0].delta != -1 {
+		t.Fatalf("unexpected following count update: %+v", userCountRepo.followingCalls[0])
+	}
+	if userCountRepo.followerCalls[0].userID != 2001 || userCountRepo.followerCalls[0].delta != -1 {
+		t.Fatalf("unexpected follower count update: %+v", userCountRepo.followerCalls[0])
+	}
+	if invalidator.called != 1 {
+		t.Fatalf("expected invalidator called once, got=%d", invalidator.called)
+	}
+	if cleanup.called != 1 {
+		t.Fatalf("expected cleanup called once, got=%d", cleanup.called)
+	}
+}
+
+func TestFollowServiceUnfollowNoopDoesNotTouchCounts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	followRepo := &fakeFollowRepo{deleted: false}
+	userCountRepo := &fakeFollowUserCountRepo{}
+	txRunner := &fakeTransactionRunner{}
+	invalidator := &fakeFollowFeedInvalidator{}
+	cleanup := &fakeFollowInboxCleanup{}
+
+	svc := NewFollowServiceWithTransaction(txRunner, followRepo, &fakeFollowUserRepo{}, userCountRepo).
+		WithFeedCacheInvalidator(invalidator).
+		WithInboxAuthorCleanup(cleanup)
+
+	gotErr := svc.Unfollow(ctx, 1001, 2001)
+
+	if gotErr != nil {
+		t.Fatalf("unexpected error: %v", gotErr)
+	}
+	if txRunner.called != 1 {
+		t.Fatalf("expected transaction runner called once, got=%d", txRunner.called)
+	}
+	if len(userCountRepo.followingCalls) != 0 || len(userCountRepo.followerCalls) != 0 {
+		t.Fatalf("expected no count updates, got following=%d follower=%d", len(userCountRepo.followingCalls), len(userCountRepo.followerCalls))
+	}
+	if invalidator.called != 0 {
+		t.Fatalf("expected invalidator not called on noop unfollow, got=%d", invalidator.called)
+	}
+	if cleanup.called != 0 {
+		t.Fatalf("expected cleanup not called on noop unfollow, got=%d", cleanup.called)
 	}
 }

@@ -32,10 +32,11 @@ func main() {
 		&model.PostCollect{},
 		&model.PostComment{},
 		&model.Follow{},
+		&model.FeedEventOutbox{},
 		&model.FeedDLQOperator{},
 	); err != nil {
 		log.Fatalf("auto migrate failed: %v", err)
 	}
 
-	log.Println("migration completed: users, user_counts, posts, post interactions, follows, feed_dlq_operators")
+	log.Println("migration completed: users, user_counts, posts, post interactions, follows, feed_event_outbox, feed_dlq_operators")
 }

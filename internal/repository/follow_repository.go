@@ -19,10 +19,28 @@ func (r *FollowRepository) Create(ctx context.Context, follow *model.Follow) err
 	return r.db.WithContext(ctx).Create(follow).Error
 }
 
-func (r *FollowRepository) Delete(ctx context.Context, userID int64, targetUserID int64) error {
-	return r.db.WithContext(ctx).
+func (r *FollowRepository) CreateTx(ctx context.Context, tx *gorm.DB, follow *model.Follow) error {
+	return tx.WithContext(ctx).Create(follow).Error
+}
+
+func (r *FollowRepository) Delete(ctx context.Context, userID int64, targetUserID int64) (bool, error) {
+	result := r.db.WithContext(ctx).
 		Where("user_id = ? AND target_user_id = ?", userID, targetUserID).
-		Delete(&model.Follow{}).Error
+		Delete(&model.Follow{})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func (r *FollowRepository) DeleteTx(ctx context.Context, tx *gorm.DB, userID int64, targetUserID int64) (bool, error) {
+	result := tx.WithContext(ctx).
+		Where("user_id = ? AND target_user_id = ?", userID, targetUserID).
+		Delete(&model.Follow{})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (r *FollowRepository) ListFollowingUserIDs(ctx context.Context, userID int64) ([]int64, error) {
