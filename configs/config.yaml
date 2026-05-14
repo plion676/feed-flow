@@ -61,6 +61,12 @@ feed:
     # Max reclaim batches per consume loop.
     reclaim_batch_per_loop: 5
 
+    # Feed event outbox relay settings.
+    outbox_relay_batch_size: 50
+    outbox_relay_idle_sleep_ms: 1000
+    outbox_relay_initial_backoff_ms: 1000
+    outbox_relay_max_backoff_ms: 30000
+
     # Consume retry backoff settings.
     retry_initial_backoff_ms: 1000
     retry_max_backoff_ms: 30000

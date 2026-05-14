@@ -63,11 +63,11 @@ type FeedInboxConfig struct {
 }
 
 type FeedOutboxConfig struct {
-	Enabled            bool  `yaml:"enabled"`
-	MaxItems           int64 `yaml:"max_items"`
-	ReadChunkSize      int   `yaml:"read_chunk_size"`
-	MaxAuthorsPerRead  int   `yaml:"max_authors_per_read"`
-	DBFallbackEnabled  bool  `yaml:"db_fallback_enabled"`
+	Enabled           bool  `yaml:"enabled"`
+	MaxItems          int64 `yaml:"max_items"`
+	ReadChunkSize     int   `yaml:"read_chunk_size"`
+	MaxAuthorsPerRead int   `yaml:"max_authors_per_read"`
+	DBFallbackEnabled bool  `yaml:"db_fallback_enabled"`
 }
 
 type FeedMixConfig struct {
@@ -96,6 +96,15 @@ type FeedWorkerConfig struct {
 	IdleLogIntervalSeconds int `yaml:"idle_log_interval_seconds"`
 	// ReclaimBatchPerLoop controls max XAUTOCLAIM iterations per consume loop.
 	ReclaimBatchPerLoop int `yaml:"reclaim_batch_per_loop"`
+
+	// OutboxRelayBatchSize controls how many pending outbox events are claimed per relay loop.
+	OutboxRelayBatchSize int `yaml:"outbox_relay_batch_size"`
+	// OutboxRelayIdleSleepMS controls how long relay sleeps when no pending outbox events exist.
+	OutboxRelayIdleSleepMS int `yaml:"outbox_relay_idle_sleep_ms"`
+	// OutboxRelayInitialBackoffMS controls initial publish retry backoff for a failed outbox event.
+	OutboxRelayInitialBackoffMS int `yaml:"outbox_relay_initial_backoff_ms"`
+	// OutboxRelayMaxBackoffMS controls max publish retry backoff for a failed outbox event.
+	OutboxRelayMaxBackoffMS int `yaml:"outbox_relay_max_backoff_ms"`
 
 	// RetryInitialBackoffMS is the initial worker consume retry backoff in ms.
 	RetryInitialBackoffMS int `yaml:"retry_initial_backoff_ms"`

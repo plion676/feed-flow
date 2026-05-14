@@ -183,3 +183,25 @@ func TestFeedEventOutboxRelayResolveRetryBackoff(t *testing.T) {
 		}
 	}
 }
+
+func TestFeedEventOutboxRelayWithOptions(t *testing.T) {
+	t.Parallel()
+
+	relay := NewFeedEventOutboxRelay(&fakeFeedEventOutboxSource{}, &fakeFeedEventOutboxPublisher{}).
+		WithBatchSize(99).
+		WithIdleSleep(2*time.Second).
+		WithRetryBackoff(3*time.Second, 9*time.Second)
+
+	if relay.batchSize != 99 {
+		t.Fatalf("unexpected batch size: %d", relay.batchSize)
+	}
+	if relay.idleSleep != 2*time.Second {
+		t.Fatalf("unexpected idle sleep: %s", relay.idleSleep)
+	}
+	if relay.initialBackoff != 3*time.Second {
+		t.Fatalf("unexpected initial backoff: %s", relay.initialBackoff)
+	}
+	if relay.maxBackoff != 9*time.Second {
+		t.Fatalf("unexpected max backoff: %s", relay.maxBackoff)
+	}
+}

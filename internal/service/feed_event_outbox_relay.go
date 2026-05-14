@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/plion676/feed-flow/internal/model"
@@ -80,11 +81,22 @@ func (r *FeedEventOutboxRelay) Run(ctx context.Context) error {
 			return err
 		}
 		if len(rows) == 0 {
+			log.Printf(
+				"feed_outbox_relay action=idle batch_size=%d idle_sleep=%s",
+				r.batchSize,
+				r.idleSleep,
+			)
 			if err := sleepWithContext(ctx, r.idleSleep); err != nil {
 				return err
 			}
 			continue
 		}
+
+		log.Printf(
+			"feed_outbox_relay action=claim count=%d batch_size=%d",
+			len(rows),
+			r.batchSize,
+		)
 
 		for _, row := range rows {
 			if row == nil {
@@ -92,13 +104,38 @@ func (r *FeedEventOutboxRelay) Run(ctx context.Context) error {
 			}
 			if err := r.publisher.PublishEventPayload(ctx, row.ID, row.Payload); err != nil {
 				retryCount := row.RetryCount + 1
-				nextRetryAt := time.Now().Add(r.resolveRetryBackoff(retryCount))
+				backoff := r.resolveRetryBackoff(retryCount)
+				nextRetryAt := time.Now().Add(backoff)
+				log.Printf(
+					"feed_outbox_relay action=publish_failed outbox_event_id=%d event_type=%s aggregate_type=%s aggregate_id=%d author_id=%d post_id=%d retry_count=%d next_retry_at=%s err=%v",
+					row.ID,
+					row.EventType,
+					row.AggregateType,
+					row.AggregateID,
+					row.AuthorUserID,
+					row.PostID,
+					retryCount,
+					nextRetryAt.Format(time.RFC3339),
+					err,
+				)
 				if markErr := r.outboxRepo.MarkPublishFailed(ctx, row.ID, retryCount, nextRetryAt, err.Error()); markErr != nil {
 					return fmt.Errorf("mark outbox publish failed id=%d: %w", row.ID, markErr)
 				}
 				continue
 			}
-			if err := r.outboxRepo.MarkSent(ctx, row.ID, time.Now()); err != nil {
+			sentAt := time.Now()
+			log.Printf(
+				"feed_outbox_relay action=publish_succeeded outbox_event_id=%d event_type=%s aggregate_type=%s aggregate_id=%d author_id=%d post_id=%d retry_count=%d sent_at=%s",
+				row.ID,
+				row.EventType,
+				row.AggregateType,
+				row.AggregateID,
+				row.AuthorUserID,
+				row.PostID,
+				row.RetryCount,
+				sentAt.Format(time.RFC3339),
+			)
+			if err := r.outboxRepo.MarkSent(ctx, row.ID, sentAt); err != nil {
 				return fmt.Errorf("mark outbox sent id=%d: %w", row.ID, err)
 			}
 		}

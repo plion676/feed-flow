@@ -19,6 +19,10 @@ const (
 	defaultConsumeRetryInitialBackoff = 1 * time.Second
 	defaultConsumeRetryMaxBackoff     = 30 * time.Second
 	defaultConsumeRetryJitterPercent  = 20
+	defaultOutboxRelayBatchSize       = 50
+	defaultOutboxRelayIdleSleep       = 1 * time.Second
+	defaultOutboxRelayInitialBackoff  = 1 * time.Second
+	defaultOutboxRelayMaxBackoff      = 30 * time.Second
 )
 
 func main() {
@@ -49,8 +53,11 @@ func main() {
 	feedInvalidator := repository.NewFeedCacheInvalidatorRepository(redisClient)
 	eventRepo := repository.NewFeedInvalidationEventRepository(redisClient)
 	eventRepo = eventRepo.WithConsumerConfig(buildEventConsumerConfig(cfg))
+	outboxRelayCfg := buildOutboxRelayConfig(cfg)
 	outboxRelay := service.NewFeedEventOutboxRelay(feedEventOutboxRepo, eventRepo).
-		WithBatchSize(50)
+		WithBatchSize(outboxRelayCfg.BatchSize).
+		WithIdleSleep(outboxRelayCfg.IdleSleep).
+		WithRetryBackoff(outboxRelayCfg.InitialBackoff, outboxRelayCfg.MaxBackoff)
 	worker := service.NewFeedInvalidationWorker(followRepo, feedInvalidator).
 		WithHybridPolicy(service.NewFeedHybridPolicy(cfg.Feed.Hybrid.PushFollowerThreshold))
 	if cfg.Feed.Inbox.Enabled {
@@ -138,6 +145,13 @@ type workerRetryConfig struct {
 	JitterPercent  int
 }
 
+type outboxRelayConfig struct {
+	BatchSize      int
+	IdleSleep      time.Duration
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+}
+
 type inboxFanoutOptions struct {
 	MaxItems  int64
 	BatchSize int
@@ -180,6 +194,35 @@ func buildInboxFanoutOptions(cfg *app.Config) inboxFanoutOptions {
 		BatchSize: cfg.Feed.Inbox.BatchSize,
 		Workers:   cfg.Feed.Inbox.Workers,
 	}
+}
+
+func buildOutboxRelayConfig(cfg *app.Config) outboxRelayConfig {
+	result := outboxRelayConfig{
+		BatchSize:      defaultOutboxRelayBatchSize,
+		IdleSleep:      defaultOutboxRelayIdleSleep,
+		InitialBackoff: defaultOutboxRelayInitialBackoff,
+		MaxBackoff:     defaultOutboxRelayMaxBackoff,
+	}
+	if cfg == nil {
+		return result
+	}
+
+	if batchSize := cfg.Feed.Worker.OutboxRelayBatchSize; batchSize > 0 {
+		result.BatchSize = batchSize
+	}
+	if ms := cfg.Feed.Worker.OutboxRelayIdleSleepMS; ms > 0 {
+		result.IdleSleep = time.Duration(ms) * time.Millisecond
+	}
+	if ms := cfg.Feed.Worker.OutboxRelayInitialBackoffMS; ms > 0 {
+		result.InitialBackoff = time.Duration(ms) * time.Millisecond
+	}
+	if ms := cfg.Feed.Worker.OutboxRelayMaxBackoffMS; ms > 0 {
+		result.MaxBackoff = time.Duration(ms) * time.Millisecond
+	}
+	if result.MaxBackoff < result.InitialBackoff {
+		result.MaxBackoff = result.InitialBackoff
+	}
+	return result
 }
 
 func buildEventConsumerConfig(cfg *app.Config) repository.FeedInvalidationConsumerConfig {

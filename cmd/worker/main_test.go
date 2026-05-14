@@ -180,3 +180,52 @@ func TestBuildInboxFanoutOptions(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildOutboxRelayConfigDefaults(t *testing.T) {
+	t.Parallel()
+
+	got := buildOutboxRelayConfig(nil)
+
+	if got.BatchSize != defaultOutboxRelayBatchSize {
+		t.Fatalf("unexpected default batch size: got=%d want=%d", got.BatchSize, defaultOutboxRelayBatchSize)
+	}
+	if got.IdleSleep != defaultOutboxRelayIdleSleep {
+		t.Fatalf("unexpected default idle sleep: got=%s want=%s", got.IdleSleep, defaultOutboxRelayIdleSleep)
+	}
+	if got.InitialBackoff != defaultOutboxRelayInitialBackoff {
+		t.Fatalf("unexpected default initial backoff: got=%s want=%s", got.InitialBackoff, defaultOutboxRelayInitialBackoff)
+	}
+	if got.MaxBackoff != defaultOutboxRelayMaxBackoff {
+		t.Fatalf("unexpected default max backoff: got=%s want=%s", got.MaxBackoff, defaultOutboxRelayMaxBackoff)
+	}
+}
+
+func TestBuildOutboxRelayConfigFromConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := &app.Config{
+		Feed: app.FeedConfig{
+			Worker: app.FeedWorkerConfig{
+				OutboxRelayBatchSize:        128,
+				OutboxRelayIdleSleepMS:      1500,
+				OutboxRelayInitialBackoffMS: 2000,
+				OutboxRelayMaxBackoffMS:     500,
+			},
+		},
+	}
+
+	got := buildOutboxRelayConfig(cfg)
+
+	if got.BatchSize != 128 {
+		t.Fatalf("unexpected batch size: got=%d want=128", got.BatchSize)
+	}
+	if got.IdleSleep != 1500*time.Millisecond {
+		t.Fatalf("unexpected idle sleep: got=%s want=%s", got.IdleSleep, 1500*time.Millisecond)
+	}
+	if got.InitialBackoff != 2*time.Second {
+		t.Fatalf("unexpected initial backoff: got=%s want=%s", got.InitialBackoff, 2*time.Second)
+	}
+	if got.MaxBackoff != 2*time.Second {
+		t.Fatalf("unexpected max backoff clamp: got=%s want=%s", got.MaxBackoff, 2*time.Second)
+	}
+}
